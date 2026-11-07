@@ -183,14 +183,15 @@ function createInMemoryReservationPrisma() {
         holds.set(where.id, updated);
         return { ...updated };
       },
-      async deleteMany({ where }: any) {
+      async deleteMany({ where }: any = {}) {
         let count = 0;
-        const threshold = where.expiresAt?.lte ? new Date(where.expiresAt.lte).getTime() : Infinity;
-        for (const [id, h] of holds.entries()) {
-          if (h.tableId === where.tableId && new Date(h.expiresAt).getTime() <= threshold) {
-            holds.delete(id);
-            count++;
-          }
+        for (const [id, h] of Array.from(holds.entries())) {
+          if (where?.id && id !== where.id) continue;
+          if (where?.tableId && h.tableId !== where.tableId) continue;
+          if (where?.expiresAt?.gt && new Date(h.expiresAt).getTime() <= new Date(where.expiresAt.gt).getTime()) continue;
+          if (where?.expiresAt?.lte && new Date(h.expiresAt).getTime() > new Date(where.expiresAt.lte).getTime()) continue;
+          holds.delete(id);
+          count++;
         }
         return { count };
       },

@@ -18,9 +18,10 @@ export class OrdersController {
     }
 
     try {
-      const userId = request.user?.id;
-      const result = await this.ordersService.checkout(parseResult.data, userId);
-      return reply.status(201).send(result);
+      const userId = request.user?.id || (request.user as any)?.userId;
+      const guestSessionId = (request.headers['x-guest-session-id'] as string) || parseResult.data.guestSessionId;
+      const result = await this.ordersService.checkout(parseResult.data, userId, guestSessionId);
+      return reply.status(result.isDuplicateSubmission ? 200 : 201).send(result);
     } catch (err: any) {
       return reply.status(err.statusCode || 500).send({
         statusCode: err.statusCode || 500,

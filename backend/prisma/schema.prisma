@@ -131,7 +131,8 @@ model Order {
   subtotalInPaise  Int                  // Base items sum in paise
   taxInPaise       Int                  // Standard GST calculated server-side in paise
   totalInPaise     Int                  // Final bill in paise
-  idempotencyKey           String?              @unique // Prevents double checkout submissions
+  idempotencyScope         String?              // Owner scope: e.g. "user:<userId>" or "guest:<sessionId>"
+  idempotencyKey           String?              // Client idempotency key
   idempotencyPayloadHash   String?              // SHA-256 fingerprint of cart items & amount
   guestAccessTokenHash     String?              // SHA-256 hash of secret guest token (prevents IDOR access)
   paymentIntentId          String?              @unique // Gateway Order ID (e.g. order_xxxx)
@@ -147,6 +148,8 @@ model Order {
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
 
+  @@unique([idempotencyScope, idempotencyKey])
+  @@index([idempotencyKey])
   @@index([userId])
   @@index([status])
   @@index([expiresAt])

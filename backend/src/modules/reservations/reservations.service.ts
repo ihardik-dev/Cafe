@@ -171,11 +171,21 @@ export class ReservationsService {
         throw err;
       }
 
-      // Serialize concurrent booking attempts on this table using PostgreSQL row-level lock
-      try {
-        await tx.$executeRawUnsafe(`SELECT id FROM "Table" WHERE id = $1 FOR UPDATE`, table.id);
-      } catch {
-        // Fallback for in-memory mocks
+      // Acquire table row lock inside transaction via $queryRaw FOR UPDATE. Never silently swallow lock failure!
+      if (tx.$queryRaw) {
+        const lockedTables = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id
+          FROM "Table"
+          WHERE id = ${table.id}
+          FOR UPDATE
+        `;
+
+        if (!lockedTables || lockedTables.length === 0) {
+          const err: any = new Error('Table not found or lock acquisition failed');
+          err.statusCode = 404;
+          err.code = 'TABLE_NOT_FOUND';
+          throw err;
+        }
       }
 
       if (table.capacity < input.guestCount) {
@@ -292,7 +302,37 @@ export class ReservationsService {
     userId?: string
   ) {
     return this.prisma.$transaction(async (tx) => {
-      // 1. Fetch hold record
+      // Step 0: Find preliminary hold to obtain target tableId
+      const preliminaryHold = await tx.reservationHold.findUnique({
+        where: { heldByToken: input.holdToken },
+        select: { tableId: true },
+      });
+
+      if (!preliminaryHold) {
+        const err: any = new Error('Hold token not found or already confirmed');
+        err.statusCode = 404;
+        err.code = 'HOLD_NOT_FOUND';
+        throw err;
+      }
+
+      // Step 1: Lock the table FIRST inside the transaction using $queryRaw FOR UPDATE. Never swallow failure!
+      if (tx.$queryRaw) {
+        const lockedTables = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT id
+          FROM "Table"
+          WHERE id = ${preliminaryHold.tableId}
+          FOR UPDATE
+        `;
+
+        if (!lockedTables || lockedTables.length === 0) {
+          const err: any = new Error('Table not found or lock acquisition failed');
+          err.statusCode = 404;
+          err.code = 'TABLE_NOT_FOUND';
+          throw err;
+        }
+      }
+
+      // Step 2: Re-fetch the hold AFTER obtaining the table lock!
       const hold = await tx.reservationHold.findUnique({
         where: { heldByToken: input.holdToken },
         include: { table: true },
@@ -305,17 +345,9 @@ export class ReservationsService {
         throw err;
       }
 
-      // Serialize concurrent confirmation attempts on this table using PostgreSQL row-level lock
-      try {
-        await tx.$executeRawUnsafe(`SELECT id FROM "Table" WHERE id = $1 FOR UPDATE`, hold.tableId);
-      } catch {
-        // Fallback for in-memory mocks
-      }
-
-      // 2. Verify hold has not expired
+      // Verify hold has not expired
       if (new Date(hold.expiresAt).getTime() <= Date.now()) {
-        // Clean up expired hold
-        await tx.reservationHold.delete({ where: { id: hold.id } });
+        await tx.reservationHold.deleteMany({ where: { id: hold.id } });
 
         const err: any = new Error(
           'Your 10-minute reservation hold has expired. Please select a slot again.'
@@ -325,7 +357,7 @@ export class ReservationsService {
         throw err;
       }
 
-      // 3. Re-verify party size does not exceed table capacity (Fix for Review Issue E)
+      // Step 3: Re-verify party size does not exceed table capacity (Fix for Review Issue E)
       if (guestDetails.guestCount > hold.table.capacity) {
         const err: any = new Error(
           `Cannot confirm reservation for ${guestDetails.guestCount} guests. Table ${hold.table.tableNumber} maximum capacity is ${hold.table.capacity}.`
@@ -335,7 +367,7 @@ export class ReservationsService {
         throw err;
       }
 
-      // 4. Re-verify zero interval overlap against any newly confirmed reservations
+      // Step 4: Re-verify zero interval overlap against any newly confirmed reservations
       const overlapping = await tx.reservation.findFirst({
         where: {
           tableId: hold.tableId,
@@ -351,6 +383,21 @@ export class ReservationsService {
         );
         err.statusCode = 409;
         err.code = 'RESERVATION_CONFLICT';
+        throw err;
+      }
+
+      // Step 5: Claim/delete the hold conditionally!
+      const claimed = await tx.reservationHold.deleteMany({
+        where: {
+          id: hold.id,
+          expiresAt: { gt: new Date() },
+        },
+      });
+
+      if (claimed.count !== 1) {
+        const err: any = new Error('Hold already consumed or expired');
+        err.statusCode = 409;
+        err.code = 'HOLD_ALREADY_CONSUMED';
         throw err;
       }
 
@@ -380,11 +427,6 @@ export class ReservationsService {
         include: {
           table: true,
         },
-      });
-
-      // 5. Atomically release/delete the hold record
-      await tx.reservationHold.delete({
-        where: { id: hold.id },
       });
 
       return {

@@ -13,6 +13,7 @@ export const checkoutRequestSchema = z.object({
     .string()
     .min(8, 'Idempotency key must be at least 8 characters')
     .max(128, 'Idempotency key too long'),
+  guestSessionId: z.string().min(1).max(100).optional(),
   items: z
     .array(checkoutItemSchema)
     .min(1, 'Order must contain at least 1 item')

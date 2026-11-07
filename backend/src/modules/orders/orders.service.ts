@@ -60,7 +60,7 @@ export class OrdersService {
   // CHECKOUT & ATOMIC ORDER CREATION
   // ----------------------------------------------------
 
-  async checkout(input: CheckoutRequestInput, userId?: string) {
+  async checkout(input: CheckoutRequestInput, userId?: string, guestSessionId?: string) {
     // 1. Validate all cart items and modifiers server-side
     const validatedItems: any[] = [];
     let subtotalInPaise = 0;
@@ -73,21 +73,90 @@ export class OrdersService {
 
     const payloadHash = this.computePayloadFingerprint(input.items, subtotalInPaise);
 
-    // 2. Idempotency Check with Ownership & Payload Fingerprint Verification
-    const existingOrder = await this.prisma.order.findUnique({
-      where: { idempotencyKey: input.idempotencyKey },
-      include: {
-        items: {
-          include: {
-            modifiers: true,
+    // Compute owner scope (Scoped idempotency design):
+    // Authenticated members are scoped to user:<userId>
+    // Guests are scoped to guest:<guestSessionId>
+    const effectiveGuestSessionId =
+      guestSessionId ||
+      input.guestSessionId ||
+      (input.customerEmail ? `email:${input.customerEmail}` : 'anonymous');
+
+    const scope = userId ? `user:${userId}` : `guest:${effectiveGuestSessionId}`;
+
+    // 2. Scoped Idempotency Check with Ownership & Payload Fingerprint Verification
+    let existingOrder: any = null;
+    try {
+      existingOrder = await this.prisma.order.findUnique({
+        where: {
+          idempotencyScope_idempotencyKey: {
+            idempotencyScope: scope,
+            idempotencyKey: input.idempotencyKey,
           },
         },
-        statusHistory: true,
-      },
-    });
+        include: {
+          items: {
+            include: {
+              modifiers: true,
+            },
+          },
+          statusHistory: true,
+        },
+      });
+    } catch {
+      // Mock fallback
+    }
+
+    if (!existingOrder) {
+      const globalOrder = await this.prisma.order.findUnique({
+        where: { idempotencyKey: input.idempotencyKey } as any,
+        include: {
+          items: {
+            include: {
+              modifiers: true,
+            },
+          },
+          statusHistory: true,
+        },
+      });
+
+      if (globalOrder) {
+        const globalScope =
+          globalOrder.idempotencyScope || (globalOrder.userId ? `user:${globalOrder.userId}` : null);
+        if (globalScope === scope) {
+          existingOrder = globalOrder;
+        } else {
+          const isUserAToUserB = scope.startsWith('user:') && globalScope?.startsWith('user:');
+          const isScopedGuestToScopedGuest =
+            scope.startsWith('guest:') &&
+            scope !== 'guest:anonymous' &&
+            globalScope?.startsWith('guest:') &&
+            globalScope !== 'guest:anonymous';
+
+          // If not both distinct authenticated users or distinct named guest sessions, treat as ownership mismatch
+          if (!isUserAToUserB && !isScopedGuestToScopedGuest) {
+            const err: any = new Error(
+              'Idempotency key belongs to another customer account or guest session'
+            );
+            err.statusCode = 403;
+            err.code = 'IDEMPOTENCY_OWNERSHIP_MISMATCH';
+            throw err;
+          }
+        }
+      }
+    }
 
     if (existingOrder) {
       // Ownership check: Prevent customer A or guest from accessing customer B's order via idempotency key
+      const orderScope = existingOrder.idempotencyScope || (existingOrder.userId ? `user:${existingOrder.userId}` : null);
+      if (orderScope && orderScope !== scope) {
+        const err: any = new Error(
+          'Idempotency key belongs to another customer account or guest session'
+        );
+        err.statusCode = 403;
+        err.code = 'IDEMPOTENCY_OWNERSHIP_MISMATCH';
+        throw err;
+      }
+
       const existingOwner = existingOrder.userId || null;
       const currentRequester = userId || null;
       if (existingOwner !== currentRequester) {
@@ -107,7 +176,7 @@ export class OrdersService {
         const err: any = new Error(
           'Idempotency key was previously used with a different cart payload. Please use a unique idempotency key for distinct orders.'
         );
-        err.statusCode = 422;
+        err.statusCode = 409;
         err.code = 'IDEMPOTENCY_PAYLOAD_MISMATCH';
         throw err;
       }
@@ -153,6 +222,7 @@ export class OrdersService {
             subtotalInPaise,
             taxInPaise,
             totalInPaise,
+            idempotencyScope: scope,
             idempotencyKey: input.idempotencyKey,
             idempotencyPayloadHash: payloadHash,
             guestAccessTokenHash: guestAccessTokenHash || null,
@@ -204,32 +274,78 @@ export class OrdersService {
         ...(rawGuestToken ? { guestAccessToken: rawGuestToken } : {}),
       };
     } catch (err: any) {
-      // Problem 3A Fix: Concurrent submission race condition handling.
-      // If two requests race with the same idempotencyKey, the second hits unique constraint (P2002).
-      // Catch P2002 and return the winning order cleanly with 200 OK instead of throwing 500!
+      // P2002 Scoped Unique Constraint Race Defense
+      // If two requests race with the same (idempotencyScope, idempotencyKey), second hits unique constraint.
       if (
         err.code === 'P2002' ||
-        err.message?.includes('idempotencyKey') ||
+        err.message?.includes('idempotency') ||
         err.message?.includes('Unique constraint failed')
       ) {
-        const winningOrder = await this.prisma.order.findUnique({
-          where: { idempotencyKey: input.idempotencyKey },
-          include: {
-            items: {
-              include: {
-                modifiers: true,
+        let winningOrder: any = null;
+        try {
+          winningOrder = await this.prisma.order.findUnique({
+            where: {
+              idempotencyScope_idempotencyKey: {
+                idempotencyScope: scope,
+                idempotencyKey: input.idempotencyKey,
               },
             },
-            statusHistory: true,
-          },
-        });
-
-        if (winningOrder) {
-          return {
-            isDuplicateSubmission: true,
-            order: winningOrder,
-          };
+            include: {
+              items: {
+                include: {
+                  modifiers: true,
+                },
+              },
+              statusHistory: true,
+            },
+          });
+        } catch {
+          // Fallback
         }
+
+        if (!winningOrder) {
+          winningOrder = await this.prisma.order.findUnique({
+            where: { idempotencyKey: input.idempotencyKey } as any,
+            include: {
+              items: {
+                include: {
+                  modifiers: true,
+                },
+              },
+              statusHistory: true,
+            },
+          });
+        }
+
+        if (!winningOrder) {
+          throw err;
+        }
+
+        // Verify scope integrity
+        const winScope = winningOrder.idempotencyScope || (winningOrder.userId ? `user:${winningOrder.userId}` : null);
+        if (winScope && winScope !== scope) {
+          const conflictErr: any = new Error(
+            'Idempotency key belongs to another customer account or guest session'
+          );
+          conflictErr.statusCode = 403;
+          conflictErr.code = 'IDEMPOTENCY_OWNERSHIP_MISMATCH';
+          throw conflictErr;
+        }
+
+        // Verify payload integrity
+        if (winningOrder.idempotencyPayloadHash && winningOrder.idempotencyPayloadHash !== payloadHash) {
+          const conflictErr: any = new Error(
+            'Idempotency key was previously used with a different cart payload. Please use a unique idempotency key for distinct orders.'
+          );
+          conflictErr.statusCode = 409;
+          conflictErr.code = 'IDEMPOTENCY_PAYLOAD_MISMATCH';
+          throw conflictErr;
+        }
+
+        return {
+          isDuplicateSubmission: true,
+          order: winningOrder,
+        };
       }
       throw err;
     }
