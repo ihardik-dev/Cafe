@@ -7,14 +7,14 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
   const paymentsService = new PaymentsService(fastify.prisma);
   const controller = new PaymentsController(paymentsService);
 
-  // POST /create-intent
+  // POST /create-intent (Razorpay Order creation)
   fastify.post(
     '/create-intent',
     {
       preHandler: [fastify.optionalAuthenticate],
       schema: {
         tags: ['Payments'],
-        summary: 'Initiate payment intent for an order',
+        summary: 'Initiate Razorpay payment order for checkout',
         body: {
           type: 'object',
           required: ['orderId'],
@@ -27,6 +27,28 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
     controller.createPaymentIntent.bind(controller)
   );
 
+  // POST /verify (Razorpay Client Callback Verification)
+  fastify.post(
+    '/verify',
+    {
+      schema: {
+        tags: ['Payments'],
+        summary: 'Verify Razorpay payment signature from client checkout modal',
+        body: {
+          type: 'object',
+          required: ['razorpayOrderId', 'razorpayPaymentId', 'razorpaySignature'],
+          properties: {
+            orderId: { type: 'string' },
+            razorpayOrderId: { type: 'string' },
+            razorpayPaymentId: { type: 'string' },
+            razorpaySignature: { type: 'string' },
+          },
+        },
+      },
+    },
+    controller.verifyPayment.bind(controller)
+  );
+
   // POST /webhook (Payment Gateway Webhook Receiver)
   fastify.post(
     '/webhook',
@@ -37,6 +59,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
         headers: {
           type: 'object',
           properties: {
+            'x-razorpay-signature': { type: 'string' },
             'x-webhook-signature': { type: 'string' },
           },
         },

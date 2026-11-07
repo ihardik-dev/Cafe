@@ -14,7 +14,9 @@ const envSchema = z.object({
   JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
-  WEBHOOK_SECRET: z.string().min(1, 'WEBHOOK_SECRET is required'),
+  RAZORPAY_KEY_ID: z.string().default('rzp_test_TsQvWVNWRrqL18'),
+  RAZORPAY_KEY_SECRET: z.string().default('JfcVD87BqnJ2yuQxVX6AS4Bj'),
+  WEBHOOK_SECRET: z.string().default('JfcVD87BqnJ2yuQxVX6AS4Bj'),
   CORS_ORIGIN: z.string().default('*'),
 });
 

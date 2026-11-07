@@ -118,6 +118,14 @@ function createInMemoryPrisma() {
       async findUnique({ where, include }: any) {
         let order: any = null;
         if (where.id) order = orders.get(where.id);
+        if (where.paymentIntentId) {
+          for (const o of orders.values()) {
+            if (o.paymentIntentId === where.paymentIntentId) {
+              order = o;
+              break;
+            }
+          }
+        }
         if (where.idempotencyKey) {
           for (const o of orders.values()) {
             if (o.idempotencyKey === where.idempotencyKey) {
@@ -132,6 +140,19 @@ function createInMemoryPrisma() {
           res.items = Array.from(orderItems.values()).filter((i) => i.orderId === order.id);
         }
         return res;
+      },
+      async findFirst({ where, include }: any = {}) {
+        for (const o of orders.values()) {
+          if (where?.id && o.id !== where.id) continue;
+          if (where?.paymentIntentId && o.paymentIntentId !== where.paymentIntentId) continue;
+          if (where?.status && o.status !== where.status) continue;
+          const res: any = { ...o };
+          if (include?.items) {
+            res.items = Array.from(orderItems.values()).filter((i) => i.orderId === o.id);
+          }
+          return res;
+        }
+        return null;
       },
       async findMany({ where }: any = {}) {
         let result = Array.from(orders.values());

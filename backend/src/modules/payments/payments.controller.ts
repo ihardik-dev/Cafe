@@ -1,6 +1,10 @@
 import { FastifyReply, FastifyRequest } from 'fastify';
 import { PaymentsService } from './payments.service.js';
-import { createPaymentIntentSchema, manualRefundSchema } from './payments.schema.js';
+import {
+  createPaymentIntentSchema,
+  verifyPaymentSchema,
+  manualRefundSchema,
+} from './payments.schema.js';
 
 export class PaymentsController {
   constructor(private paymentsService: PaymentsService) {}
@@ -18,7 +22,10 @@ export class PaymentsController {
 
     try {
       const userId = request.user?.id;
-      const intent = await this.paymentsService.createPaymentIntent(parseResult.data.orderId, userId);
+      const intent = await this.paymentsService.createPaymentIntent(
+        parseResult.data.orderId,
+        userId
+      );
       return reply.status(200).send({ paymentIntent: intent });
     } catch (err: any) {
       return reply.status(err.statusCode || 500).send({
@@ -30,10 +37,36 @@ export class PaymentsController {
     }
   }
 
-  async handleWebhook(request: FastifyRequest, reply: FastifyReply) {
-    const signature = request.headers['x-webhook-signature'] as string | undefined;
+  async verifyPayment(request: FastifyRequest, reply: FastifyReply) {
+    const parseResult = verifyPaymentSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        statusCode: 400,
+        error: 'Bad Request',
+        message: 'Validation failed',
+        details: parseResult.error.format(),
+      });
+    }
 
-    // Use rawBody string or stringified body
+    try {
+      const result = await this.paymentsService.verifyPayment(parseResult.data);
+      return reply.status(200).send(result);
+    } catch (err: any) {
+      return reply.status(err.statusCode || 500).send({
+        statusCode: err.statusCode || 500,
+        error: err.name || 'Error',
+        message: err.message,
+        code: err.code || 'INTERNAL_ERROR',
+      });
+    }
+  }
+
+  async handleWebhook(request: FastifyRequest, reply: FastifyReply) {
+    // Support both Razorpay's native header and custom webhook header
+    const signature =
+      (request.headers['x-razorpay-signature'] as string | undefined) ||
+      (request.headers['x-webhook-signature'] as string | undefined);
+
     const rawBody = (request as any).rawBody || JSON.stringify(request.body);
 
     try {
