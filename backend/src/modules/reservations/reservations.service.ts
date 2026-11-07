@@ -1,0 +1,355 @@
+import { PrismaClient, ReservationStatus, Role } from '@prisma/client';
+import crypto from 'crypto';
+import { HoldReservationInput, ConfirmReservationInput } from './reservations.schema.js';
+
+export class ReservationsService {
+  constructor(private prisma: PrismaClient) {}
+
+  // ----------------------------------------------------
+  // LIST TABLES & CHECK AVAILABLE SLOTS
+  // ----------------------------------------------------
+
+  async getTables() {
+    return this.prisma.table.findMany({
+      where: { isActive: true },
+      orderBy: { tableNumber: 'asc' },
+    });
+  }
+
+  async getAvailableSlots(dateStr: string, guestCount: number) {
+    // 1. Find all active tables that can seat this party
+    const candidateTables = await this.prisma.table.findMany({
+      where: {
+        isActive: true,
+        capacity: { gte: guestCount },
+      },
+      orderBy: { capacity: 'asc' },
+    });
+
+    if (candidateTables.length === 0) {
+      return {
+        date: dateStr,
+        guestCount,
+        availableTables: [],
+        message: `No tables available for parties of ${guestCount}. Please contact the cafe directly for large parties.`,
+      };
+    }
+
+    // 2. Define cafe operating hours: 10:00 AM to 10:00 PM (12 hours)
+    const dayStart = new Date(`${dateStr}T10:00:00.000Z`);
+    const dayEnd = new Date(`${dateStr}T22:00:00.000Z`);
+    const now = new Date();
+
+    // 3. Fetch all confirmed reservations and unexpired holds for candidate tables on this day
+    const candidateTableIds = candidateTables.map((t) => t.id);
+
+    const existingReservations = await this.prisma.reservation.findMany({
+      where: {
+        tableId: { in: candidateTableIds },
+        status: ReservationStatus.CONFIRMED,
+        startTime: { lt: dayEnd },
+        endTime: { gt: dayStart },
+      },
+    });
+
+    const activeHolds = await this.prisma.reservationHold.findMany({
+      where: {
+        tableId: { in: candidateTableIds },
+        expiresAt: { gt: now },
+        slotStartTime: { lt: dayEnd },
+        slotEndTime: { gt: dayStart },
+      },
+    });
+
+    // 4. Calculate available 1-hour slots for each table
+    const resultTables = candidateTables.map((table) => {
+      const slots: { startTime: string; endTime: string }[] = [];
+
+      // Loop hourly from 10:00 to 21:00
+      let slotStart = new Date(dayStart);
+      while (slotStart.getTime() + 60 * 60 * 1000 <= dayEnd.getTime()) {
+        const slotEnd = new Date(slotStart.getTime() + 60 * 60 * 1000);
+
+        // Don't show slots in the past
+        if (slotStart.getTime() > now.getTime()) {
+          // Check for conflicts: overlap condition (existing.start < slotEnd && existing.end > slotStart)
+          const hasBookingConflict = existingReservations.some(
+            (r) =>
+              r.tableId === table.id &&
+              new Date(r.startTime).getTime() < slotEnd.getTime() &&
+              new Date(r.endTime).getTime() > slotStart.getTime()
+          );
+
+          const hasHoldConflict = activeHolds.some(
+            (h) =>
+              h.tableId === table.id &&
+              new Date(h.slotStartTime).getTime() < slotEnd.getTime() &&
+              new Date(h.slotEndTime).getTime() > slotStart.getTime()
+          );
+
+          if (!hasBookingConflict && !hasHoldConflict) {
+            slots.push({
+              startTime: slotStart.toISOString(),
+              endTime: slotEnd.toISOString(),
+            });
+          }
+        }
+
+        // Advance by 1 hour
+        slotStart = new Date(slotStart.getTime() + 60 * 60 * 1000);
+      }
+
+      return {
+        tableId: table.id,
+        tableNumber: table.tableNumber,
+        capacity: table.capacity,
+        area: table.area,
+        availableSlots: slots,
+      };
+    });
+
+    return {
+      date: dateStr,
+      guestCount,
+      tables: resultTables,
+    };
+  }
+
+  // ----------------------------------------------------
+  // CONCURRENCY DEFENSE: 10-MINUTE HOLD
+  // ----------------------------------------------------
+
+  /**
+   * Places a 10-minute temporary lock on a table slot.
+   * Uses an atomic transaction and conflict detection to ensure zero double-booking.
+   */
+  async holdSlot(input: HoldReservationInput, _userId?: string) {
+    const slotStart = new Date(input.startTime);
+    const slotEnd = new Date(slotStart.getTime() + input.durationMinutes * 60 * 1000);
+    const now = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Verify Table exists, is active, and can seat the guests
+      const table = await tx.table.findUnique({
+        where: { id: input.tableId },
+      });
+
+      if (!table || !table.isActive) {
+        const err: any = new Error('Table not found or is currently inactive');
+        err.statusCode = 404;
+        err.code = 'TABLE_NOT_FOUND';
+        throw err;
+      }
+
+      if (table.capacity < input.guestCount) {
+        const err: any = new Error(
+          `Table #${table.tableNumber} has a maximum capacity of ${table.capacity} guests. Cannot book for ${input.guestCount} guests.`
+        );
+        err.statusCode = 400;
+        err.code = 'TABLE_CAPACITY_EXCEEDED';
+        throw err;
+      }
+
+      // 2. Clear any expired holds on this table so they don't block legitimate bookings
+      await tx.reservationHold.deleteMany({
+        where: {
+          tableId: table.id,
+          expiresAt: { lte: now },
+        },
+      });
+
+      // 3. Overlap check against confirmed reservations
+      // Overlap formula: existing.startTime < slotEnd AND existing.endTime > slotStart
+      const conflictingBooking = await tx.reservation.findFirst({
+        where: {
+          tableId: table.id,
+          status: ReservationStatus.CONFIRMED,
+          startTime: { lt: slotEnd },
+          endTime: { gt: slotStart },
+        },
+      });
+
+      if (conflictingBooking) {
+        const err: any = new Error(
+          `Table #${table.tableNumber} is already confirmed for another booking during this time interval.`
+        );
+        err.statusCode = 409;
+        err.code = 'SLOT_ALREADY_CONFIRMED';
+        throw err;
+      }
+
+      // 4. Overlap check against active, unexpired holds
+      const conflictingHold = await tx.reservationHold.findFirst({
+        where: {
+          tableId: table.id,
+          expiresAt: { gt: now },
+          slotStartTime: { lt: slotEnd },
+          slotEndTime: { gt: slotStart },
+        },
+      });
+
+      if (conflictingHold) {
+        const err: any = new Error(
+          `Table #${table.tableNumber} is currently held by another guest. Please try another slot or check back in 10 minutes.`
+        );
+        err.statusCode = 409;
+        err.code = 'SLOT_ALREADY_HELD';
+        throw err;
+      }
+
+      // 5. Generate secure hold token and 10-minute expiration window
+      const holdToken = crypto.randomUUID();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes from now
+
+      const hold = await tx.reservationHold.create({
+        data: {
+          tableId: table.id,
+          slotStartTime: slotStart,
+          slotEndTime: slotEnd,
+          heldByToken: holdToken,
+          expiresAt,
+        },
+      });
+
+      return {
+        holdToken: hold.heldByToken,
+        expiresAt: hold.expiresAt,
+        table: {
+          id: table.id,
+          tableNumber: table.tableNumber,
+          capacity: table.capacity,
+          area: table.area,
+        },
+        slot: {
+          startTime: slotStart.toISOString(),
+          endTime: slotEnd.toISOString(),
+          durationMinutes: input.durationMinutes,
+        },
+        guestDetails: {
+          customerName: input.customerName,
+          customerEmail: input.customerEmail,
+          customerPhone: input.customerPhone,
+          guestCount: input.guestCount,
+        },
+      };
+    });
+  }
+
+  // ----------------------------------------------------
+  // CONFIRM RESERVATION
+  // ----------------------------------------------------
+
+  /**
+   * Finalizes the reservation using the unexpired holdToken.
+   * Atomically creates the confirmed Reservation and deletes the hold.
+   */
+  async confirmReservation(
+    input: ConfirmReservationInput,
+    guestDetails: {
+      customerName: string;
+      customerEmail: string;
+      customerPhone: string;
+      guestCount: number;
+    },
+    userId?: string
+  ) {
+    return this.prisma.$transaction(async (tx) => {
+      // 1. Fetch hold record
+      const hold = await tx.reservationHold.findUnique({
+        where: { heldByToken: input.holdToken },
+        include: { table: true },
+      });
+
+      if (!hold) {
+        const err: any = new Error('Hold token not found or already confirmed');
+        err.statusCode = 404;
+        err.code = 'HOLD_NOT_FOUND';
+        throw err;
+      }
+
+      // 2. Verify hold has not expired
+      if (new Date(hold.expiresAt).getTime() <= Date.now()) {
+        // Clean up expired hold
+        await tx.reservationHold.delete({ where: { id: hold.id } });
+
+        const err: any = new Error(
+          'Your 10-minute reservation hold has expired. Please select a slot again.'
+        );
+        err.statusCode = 410;
+        err.code = 'HOLD_EXPIRED';
+        throw err;
+      }
+
+      // 3. Atomically create confirmed Reservation
+      const reservation = await tx.reservation.create({
+        data: {
+          tableId: hold.tableId,
+          userId: userId || null,
+          customerName: guestDetails.customerName,
+          customerEmail: guestDetails.customerEmail,
+          customerPhone: guestDetails.customerPhone,
+          guestCount: guestDetails.guestCount,
+          startTime: hold.slotStartTime,
+          endTime: hold.slotEndTime,
+          status: ReservationStatus.CONFIRMED,
+        },
+        include: {
+          table: true,
+        },
+      });
+
+      // 4. Atomically release/delete the hold record
+      await tx.reservationHold.delete({
+        where: { id: hold.id },
+      });
+
+      return reservation;
+    });
+  }
+
+  // ----------------------------------------------------
+  // CANCEL RESERVATION
+  // ----------------------------------------------------
+
+  async cancelReservation(reservationId: string, actor: { id?: string; role: Role }) {
+    const reservation = await this.prisma.reservation.findUnique({
+      where: { id: reservationId },
+    });
+
+    if (!reservation) {
+      const err: any = new Error('Reservation not found');
+      err.statusCode = 404;
+      err.code = 'RESERVATION_NOT_FOUND';
+      throw err;
+    }
+
+    // Access control: Customers can only cancel their own booking
+    if (actor.role === Role.CUSTOMER && reservation.userId && reservation.userId !== actor.id) {
+      const err: any = new Error('Cannot cancel another guest reservation');
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN_RESERVATION_ACCESS';
+      throw err;
+    }
+
+    if (reservation.status === ReservationStatus.CANCELLED) {
+      const err: any = new Error('Reservation is already cancelled');
+      err.statusCode = 400;
+      err.code = 'ALREADY_CANCELLED';
+      throw err;
+    }
+
+    return this.prisma.reservation.update({
+      where: { id: reservationId },
+      data: { status: ReservationStatus.CANCELLED },
+      include: { table: true },
+    });
+  }
+
+  async getCustomerReservations(userId: string) {
+    return this.prisma.reservation.findMany({
+      where: { userId },
+      orderBy: { startTime: 'desc' },
+      include: { table: true },
+    });
+  }
+}

@@ -11,6 +11,7 @@ import authPlugin from './plugins/auth.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
 import { menuRoutes } from './modules/menu/menu.routes.js';
 import { ordersRoutes } from './modules/orders/orders.routes.js';
+import { reservationsRoutes } from './modules/reservations/reservations.routes.js';
 
 export interface BuildAppOptions {
   prismaClient?: PrismaClient;
@@ -74,6 +75,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(authRoutes, { prefix: '/api/v1/auth' });
   await app.register(menuRoutes, { prefix: '/api/v1/menu' });
   await app.register(ordersRoutes, { prefix: '/api/v1/orders' });
+  await app.register(reservationsRoutes, { prefix: '/api/v1/reservations' });
 
   // Health check endpoint
   app.get('/health', async () => {
