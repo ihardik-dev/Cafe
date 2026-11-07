@@ -9,6 +9,7 @@ import { env } from './config/env.js';
 import prismaPlugin from './plugins/prisma.js';
 import authPlugin from './plugins/auth.js';
 import { authRoutes } from './modules/auth/auth.routes.js';
+import { menuRoutes } from './modules/menu/menu.routes.js';
 
 export interface BuildAppOptions {
   prismaClient?: PrismaClient;
@@ -70,6 +71,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
 
   // Route Modules
   await app.register(authRoutes, { prefix: '/api/v1/auth' });
+  await app.register(menuRoutes, { prefix: '/api/v1/menu' });
 
   // Health check endpoint
   app.get('/health', async () => {
