@@ -1,0 +1,378 @@
+{
+  "info": {
+    "_postman_id": "cafe-backend-api-collection",
+    "name": "Artisan Cafe Backend API (India / INR)",
+    "description": "Production-ready Postman collection for the Cafe Backend API. Features auto-saving JWT access tokens, order workflows, concurrency-safe table bookings, and payment webhook simulation.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:4000",
+      "type": "string"
+    },
+    {
+      "key": "accessToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "refreshToken",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "sampleOrderId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "sampleHoldToken",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "1. Authentication",
+      "item": [
+        {
+          "name": "Register Customer",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"customer@example.in\",\n  \"password\": \"CafePassword123!\",\n  \"name\": \"Aarav Sharma\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/register",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "register"]
+            }
+          }
+        },
+        {
+          "name": "Login (Auto-Saves Access Token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.tokens && json.tokens.accessToken) {",
+                  "    pm.collectionVariables.set('accessToken', json.tokens.accessToken);",
+                  "    pm.collectionVariables.set('refreshToken', json.tokens.refreshToken);",
+                  "    console.log('Access token saved to collection variable!');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"customer@example.in\",\n  \"password\": \"CafePassword123!\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/login",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "login"]
+            }
+          }
+        },
+        {
+          "name": "Get Authenticated Profile (/me)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/me",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "me"]
+            }
+          }
+        },
+        {
+          "name": "Rotate Refresh Token",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"refreshToken\": \"{{refreshToken}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/auth/refresh",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "auth", "refresh"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Menu & Customizations",
+      "item": [
+        {
+          "name": "Get Categories",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/menu/categories",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "menu", "categories"]
+            }
+          }
+        },
+        {
+          "name": "Get Full Menu with Modifiers",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/menu",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "menu"]
+            }
+          }
+        },
+        {
+          "name": "Get Item Details by ID",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/menu/items/:itemId",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "menu", "items", ":itemId"],
+              "variable": [
+                { "key": "itemId", "value": "replace-with-menu-item-id" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Orders & State Machine",
+      "item": [
+        {
+          "name": "Checkout Cart (Auto-Saves Order ID)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.order && json.order.id) {",
+                  "    pm.collectionVariables.set('sampleOrderId', json.order.id);",
+                  "    console.log('Order ID saved:', json.order.id);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"idempotencyKey\": \"client-checkout-demo-12345\",\n  \"customerNote\": \"Please make it extra hot with less sweet\",\n  \"items\": [\n    {\n      \"menuItemId\": \"replace-with-flat-white-id\",\n      \"quantity\": 1,\n      \"selectedModifierOptionIds\": [\"replace-with-oat-milk-opt-id\"]\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/checkout",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders", "checkout"]
+            }
+          }
+        },
+        {
+          "name": "Get Order by ID",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{sampleOrderId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders", "{{sampleOrderId}}"]
+            }
+          }
+        },
+        {
+          "name": "Get Customer Order History",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/my-orders",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders", "my-orders"]
+            }
+          }
+        },
+        {
+          "name": "Cancel Unpaid Order (Customer or Staff)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"CANCELLED\",\n  \"reason\": \"Customer changed mind\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/orders/{{sampleOrderId}}/status",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "orders", "{{sampleOrderId}}", "status"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Table Reservations",
+      "item": [
+        {
+          "name": "List Tables",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reservations/tables",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "reservations", "tables"]
+            }
+          }
+        },
+        {
+          "name": "Check Available Slots",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reservations/available-slots?date=2026-11-08&guests=2",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "reservations", "available-slots"],
+              "query": [
+                { "key": "date", "value": "2026-11-08" },
+                { "key": "guests", "value": "2" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Hold Slot for 10 Minutes",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "const json = pm.response.json();",
+                  "if (json.holdToken) {",
+                  "    pm.collectionVariables.set('sampleHoldToken', json.holdToken);",
+                  "    console.log('Hold Token saved:', json.holdToken);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"tableId\": \"replace-with-table-id\",\n  \"startTime\": \"2026-11-08T19:00:00.000Z\",\n  \"durationMinutes\": 60,\n  \"customerName\": \"Aarav Sharma\",\n  \"customerEmail\": \"aarav@example.in\",\n  \"customerPhone\": \"+919876543210\",\n  \"guestCount\": 2\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reservations/hold",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "reservations", "hold"]
+            }
+          }
+        },
+        {
+          "name": "Confirm Reservation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"holdToken\": \"{{sampleHoldToken}}\",\n  \"customerName\": \"Aarav Sharma\",\n  \"customerEmail\": \"aarav@example.in\",\n  \"customerPhone\": \"+919876543210\",\n  \"guestCount\": 2\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reservations/confirm",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "reservations", "confirm"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Payments & Webhooks",
+      "item": [
+        {
+          "name": "Create Payment Intent",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{sampleOrderId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payments/create-intent",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "payments", "create-intent"]
+            }
+          }
+        },
+        {
+          "name": "Admin Manual Refund Override",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{accessToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{sampleOrderId}}\",\n  \"reason\": \"Customer requested cancellation before barista started preparation\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payments/refund",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "payments", "refund"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
