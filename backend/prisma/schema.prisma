@@ -157,6 +157,7 @@ model OrderItem {
   order             Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
   menuItemId        String
   menuItem          MenuItem            @relation(fields: [menuItemId], references: [id])
+  name              String              // Snapshot of item name at checkout (immutable receipt)
   quantity          Int
   unitPriceInPaise  Int                 // Snapshot of base price at checkout in paise
   totalPriceInPaise Int                 // (unitPrice + modifiers) * quantity in paise
@@ -182,7 +183,7 @@ model OrderItemModifier {
 model OrderStatusHistory {
   id         String      @id @default(uuid())
   orderId    String
-  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order      Order       @relation(fields: [orderId], references: [id], onDelete: Restrict)
   fromStatus OrderStatus
   toStatus   OrderStatus
   changedBy  String?     // User ID or "SYSTEM"
@@ -254,6 +255,7 @@ model ReservationHold {
   slotStartTime DateTime
   slotEndTime   DateTime
   heldByToken   String   @unique
+  guestCount    Int      @default(2) // Party size locked at hold time
   expiresAt     DateTime
   createdAt     DateTime @default(now())
 
@@ -279,7 +281,7 @@ model InboundWebhookEvent {
 model RefundAudit {
   id              String   @id @default(uuid())
   orderId         String
-  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
   paymentIntentId String
   amountInPaise   Int      // Amount in paise
   reason          String   // e.g. "LATE_WEBHOOK_RECEIVED_AFTER_EXPIRATION"

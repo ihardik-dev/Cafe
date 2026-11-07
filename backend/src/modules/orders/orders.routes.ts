@@ -1,4 +1,5 @@
 import { FastifyPluginAsync } from 'fastify';
+import { Role } from '@prisma/client';
 import { MenuService } from '../menu/menu.service.js';
 import { OrdersService } from './orders.service.js';
 import { OrdersController } from './orders.controller.js';
@@ -45,6 +46,28 @@ export const ordersRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     controller.checkout.bind(controller)
+  );
+
+  // GET / (Staff & Admin order management listing)
+  fastify.get(
+    '/',
+    {
+      preHandler: [fastify.authenticate, fastify.authorize([Role.STAFF, Role.ADMIN])],
+      schema: {
+        tags: ['Orders'],
+        summary: 'List all cafe orders with status filters and pagination (Staff/Admin)',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            status: { type: 'string' },
+            limit: { type: 'integer', default: 50 },
+            offset: { type: 'integer', default: 0 },
+          },
+        },
+      },
+    },
+    controller.getAllOrders.bind(controller) as any
   );
 
   // GET /my-orders (Authenticated Customer)

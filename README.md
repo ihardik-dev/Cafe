@@ -5,10 +5,11 @@
 ![Fastify](https://img.shields.io/badge/Fastify-5.x-black?logo=fastify)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-336791?logo=postgresql)
 ![Prisma](https://img.shields.io/badge/Prisma-6.x-2D3748?logo=prisma)
-![Vitest](https://img.shields.io/badge/Vitest-59%20Tests%20Passing-success?logo=vitest)
+![Vitest](https://img.shields.io/badge/Vitest-81%20Tests%20Passing-success?logo=vitest)
 ![Currency](https://img.shields.io/badge/Currency-INR%20(Paise)-orange)
+![Razorpay](https://img.shields.io/badge/Razorpay-Live%20Test%20Mode-blue)
 
-A production-grade, enterprise backend for a specialty coffee shop and artisanal bakery. Designed with strict **concurrency controls**, **zero double-booking table reservations**, **server-side cart calculations with 5% GST**, and a **fault-tolerant payment webhook engine with automated refunds for delayed payments**.
+A production-grade, enterprise backend for a specialty coffee shop and artisanal bakery. Designed with strict **concurrency controls**, **zero double-booking table reservations**, **database-level atomic inventory guarantees (zero negative stock)**, **cryptographic anti-IDOR guest access tokens**, **idempotency race condition resilience**, and a **fault-tolerant payment webhook engine with automated refunds for delayed payments (Razorpay Test Mode)**.
 
 ---
 

@@ -1,6 +1,7 @@
 import { PrismaClient, Role } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 import { FastifyInstance } from 'fastify';
 import { RegisterInput, LoginInput, AuthResponse, SafeUser } from './auth.schema.js';
 import { env } from '../../config/env.js';
@@ -88,7 +89,8 @@ export class AuthService {
   async refreshToken(rawRefreshToken: string): Promise<AuthResponse> {
     let payload: any;
     try {
-      payload = this.fastify.jwt.verify(rawRefreshToken);
+      // Use dedicated JWT_REFRESH_SECRET to separate access and refresh token signing keys
+      payload = jwt.verify(rawRefreshToken, env.JWT_REFRESH_SECRET);
     } catch {
       const error: any = new Error('Invalid or expired refresh token');
       error.statusCode = 401;
@@ -157,14 +159,15 @@ export class AuthService {
       { expiresIn: env.JWT_EXPIRES_IN }
     );
 
-    const refreshToken = this.fastify.jwt.sign(
+    const refreshToken = jwt.sign(
       {
         id: user.id,
         email: user.email,
         role: user.role,
         jti: crypto.randomUUID(), // Guarantee cryptographic uniqueness on every rotation
       },
-      { expiresIn: env.JWT_REFRESH_EXPIRES_IN }
+      env.JWT_REFRESH_SECRET,
+      { expiresIn: env.JWT_REFRESH_EXPIRES_IN as any }
     );
 
     // Pre-hash with SHA-256 before bcrypt to prevent bcrypt 72-byte truncation on long JWTs

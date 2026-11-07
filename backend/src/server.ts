@@ -2,6 +2,7 @@ import Fastify, { FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import sensible from '@fastify/sensible';
+import rateLimit from '@fastify/rate-limit';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
 import { PrismaClient } from '@prisma/client';
@@ -25,9 +26,12 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     logger: env.NODE_ENV !== 'test',
   });
 
-  // Security headers & sensible utilities
+  // Security headers, sensible utilities, and rate limiting
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(sensible);
+  await app.register(rateLimit, {
+    global: false,
+  });
 
   // CORS configuration for frontend dev
   const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
@@ -101,13 +105,33 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(reservationsRoutes, { prefix: '/api/v1/reservations' });
   await app.register(paymentsRoutes, { prefix: '/api/v1/payments' });
 
-  // Health check endpoint
+  // Liveness check endpoint (process responding)
   app.get('/health', async () => {
     return {
       status: 'UP',
       timestamp: new Date().toISOString(),
       service: 'cafe-backend',
     };
+  });
+
+  // Readiness check endpoint (verifies database & downstream readiness)
+  app.get('/ready', async (_req, reply) => {
+    try {
+      // Ping PostgreSQL
+      await (app.prisma as any).$queryRaw`SELECT 1`;
+      return reply.status(200).send({
+        status: 'READY',
+        timestamp: new Date().toISOString(),
+        database: 'CONNECTED',
+      });
+    } catch (err: any) {
+      return reply.status(503).send({
+        status: 'NOT_READY',
+        timestamp: new Date().toISOString(),
+        database: 'DISCONNECTED',
+        error: err.message,
+      });
+    }
   });
 
   return app;
@@ -137,9 +161,15 @@ async function start() {
       }
     }, 60 * 1000);
 
-    app.addHook('onClose', async () => {
+    // Graceful shutdown handling
+    const shutdown = async () => {
       clearInterval(cleanupInterval);
-    });
+      await app.close();
+      process.exit(0);
+    };
+
+    process.once('SIGINT', shutdown);
+    process.once('SIGTERM', shutdown);
   } catch (err) {
     app.log.error(err);
     process.exit(1);

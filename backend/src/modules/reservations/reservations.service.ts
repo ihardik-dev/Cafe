@@ -207,6 +207,7 @@ export class ReservationsService {
           slotStartTime: slotStart,
           slotEndTime: slotEnd,
           heldByToken: holdToken,
+          guestCount: input.guestCount,
           expiresAt,
         },
       });
@@ -277,6 +278,35 @@ export class ReservationsService {
         );
         err.statusCode = 410;
         err.code = 'HOLD_EXPIRED';
+        throw err;
+      }
+
+      // 3. Re-verify party size does not exceed table capacity (Fix for Review Issue E)
+      if (guestDetails.guestCount > hold.table.capacity) {
+        const err: any = new Error(
+          `Cannot confirm reservation for ${guestDetails.guestCount} guests. Table ${hold.table.tableNumber} maximum capacity is ${hold.table.capacity}.`
+        );
+        err.statusCode = 422;
+        err.code = 'CAPACITY_EXCEEDED';
+        throw err;
+      }
+
+      // 4. Re-verify zero interval overlap against any newly confirmed reservations
+      const overlapping = await tx.reservation.findFirst({
+        where: {
+          tableId: hold.tableId,
+          status: ReservationStatus.CONFIRMED,
+          startTime: { lt: hold.slotEndTime },
+          endTime: { gt: hold.slotStartTime },
+        },
+      });
+
+      if (overlapping) {
+        const err: any = new Error(
+          'Slot has already been confirmed by another reservation.'
+        );
+        err.statusCode = 409;
+        err.code = 'RESERVATION_CONFLICT';
         throw err;
       }
 
@@ -397,6 +427,30 @@ export class ReservationsService {
       where: { userId },
       orderBy: { startTime: 'desc' },
       include: { table: true },
+    });
+  }
+
+  // ----------------------------------------------------
+  // ADMIN & STAFF MANAGEMENT APIS
+  // ----------------------------------------------------
+
+  async getAllReservations(filters?: { date?: string; status?: ReservationStatus }) {
+    const where: any = {};
+    if (filters?.status) {
+      where.status = filters.status;
+    }
+    if (filters?.date) {
+      const dayStart = new Date(`${filters.date}T00:00:00.000Z`);
+      const dayEnd = new Date(`${filters.date}T23:59:59.999Z`);
+      where.startTime = { gte: dayStart, lte: dayEnd };
+    }
+
+    return this.prisma.reservation.findMany({
+      where,
+      orderBy: { startTime: 'asc' },
+      include: {
+        table: true,
+      },
     });
   }
 }

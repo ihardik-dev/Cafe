@@ -11,6 +11,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/register',
     {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: '1 minute',
+        },
+      },
       schema: {
         tags: ['Authentication'],
         summary: 'Register a new customer account',
@@ -58,6 +64,12 @@ export const authRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/login',
     {
+      config: {
+        rateLimit: {
+          max: 20,
+          timeWindow: '1 minute',
+        },
+      },
       schema: {
         tags: ['Authentication'],
         summary: 'Sign in to existing account',

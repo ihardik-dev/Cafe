@@ -158,4 +158,21 @@ export class ReservationsController {
       });
     }
   }
+
+  async getAllReservations(
+    request: FastifyRequest<{ Querystring: { date?: string; status?: any } }>,
+    reply: FastifyReply
+  ) {
+    try {
+      const reservations = await this.reservationsService.getAllReservations(request.query);
+      return reply.status(200).send({ reservations });
+    } catch (err: any) {
+      return reply.status(err.statusCode || 500).send({
+        statusCode: err.statusCode || 500,
+        error: err.name || 'Error',
+        message: err.message,
+        code: err.code || 'INTERNAL_ERROR',
+      });
+    }
+  }
 }

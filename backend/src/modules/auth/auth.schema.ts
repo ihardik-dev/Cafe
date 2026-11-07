@@ -10,7 +10,9 @@ export const registerSchema = z.object({
   password: z
     .string({ error: 'Password is required' })
     .min(8, 'Password must be at least 8 characters long')
-    .max(100, 'Password is too long')
+    .refine((val) => Buffer.byteLength(val, 'utf8') <= 72, {
+      message: 'Password exceeds 72-byte cryptographic length limit for bcrypt',
+    })
     .regex(/[A-Za-z]/, 'Password must contain at least one letter')
     .regex(/[0-9]/, 'Password must contain at least one number'),
   name: z

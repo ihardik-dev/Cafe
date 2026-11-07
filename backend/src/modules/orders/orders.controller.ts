@@ -105,4 +105,18 @@ export class OrdersController {
       });
     }
   }
+
+  async getAllOrders(request: FastifyRequest<{ Querystring: { status?: any; limit?: number; offset?: number } }>, reply: FastifyReply) {
+    try {
+      const result = await this.ordersService.getAllOrders(request.query);
+      return reply.status(200).send(result);
+    } catch (err: any) {
+      return reply.status(err.statusCode || 500).send({
+        statusCode: err.statusCode || 500,
+        error: err.name || 'Error',
+        message: err.message,
+        code: err.code || 'INTERNAL_ERROR',
+      });
+    }
+  }
 }

@@ -161,6 +161,7 @@ export class OrdersService {
             items: {
               create: validatedItems.map((item) => ({
                 menuItemId: item.menuItemId,
+                name: item.name,
                 quantity: item.quantity,
                 unitPriceInPaise: item.unitPriceInPaise,
                 totalPriceInPaise: item.totalPriceInPaise,
@@ -269,8 +270,36 @@ export class OrdersService {
     }
 
     // B. Role-based transition authorization & Guest Ownership Protection
+    // 1. REFUNDED: STRICTLY ADMIN ONLY! (Prevents staff bypassing manual refund audit)
+    if (nextStatus === OrderStatus.REFUNDED && actor.role !== Role.ADMIN) {
+      const err: any = new Error(
+        'Forbidden: Only administrators can transition an order to REFUNDED status'
+      );
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN_REFUND_OPERATION';
+      throw err;
+    }
+
+    // 2. STAFF role permissions: Can prepare, mark ready, or complete kitchen orders
+    if (actor.role === Role.STAFF) {
+      const staffAllowed: OrderStatus[] = [
+        OrderStatus.PREPARING,
+        OrderStatus.READY_FOR_PICKUP,
+        OrderStatus.COMPLETED,
+        OrderStatus.CANCELLED,
+      ];
+      if (!staffAllowed.includes(nextStatus)) {
+        const err: any = new Error(
+          `Staff members do not have permission to transition orders to ${nextStatus}`
+        );
+        err.statusCode = 403;
+        err.code = 'UNAUTHORIZED_STATE_TRANSITION';
+        throw err;
+      }
+    }
+
+    // 3. CUSTOMER role permissions: Can ONLY cancel own unpaid order
     if (actor.role === Role.CUSTOMER) {
-      // Customers can ONLY cancel their own order, and only when still in PENDING_PAYMENT
       if (nextStatus !== OrderStatus.CANCELLED || currentStatus !== OrderStatus.PENDING_PAYMENT) {
         const err: any = new Error('Customers can only cancel unpaid orders');
         err.statusCode = 403;
@@ -422,5 +451,41 @@ export class OrdersService {
         },
       },
     });
+  }
+
+  // ----------------------------------------------------
+  // ADMIN & STAFF MANAGEMENT APIS
+  // ----------------------------------------------------
+
+  async getAllOrders(filters?: { status?: OrderStatus; limit?: number; offset?: number }) {
+    const where: any = {};
+    if (filters?.status) {
+      where.status = filters.status;
+    }
+    const take = filters?.limit || 50;
+    const skip = filters?.offset || 0;
+
+    const ordersList = await this.prisma.order.findMany({
+      where,
+      take,
+      skip,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        items: {
+          include: {
+            modifiers: true,
+          },
+        },
+        statusHistory: {
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+    });
+
+    const totalCount = this.prisma.order.count
+      ? await this.prisma.order.count({ where })
+      : ordersList.length;
+
+    return { total: totalCount, limit: take, offset: skip, orders: ordersList };
   }
 }

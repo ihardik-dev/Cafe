@@ -1,4 +1,5 @@
 import { FastifyPluginAsync } from 'fastify';
+import { Role } from '@prisma/client';
 import { ReservationsService } from './reservations.service.js';
 import { ReservationsController } from './reservations.controller.js';
 
@@ -86,6 +87,27 @@ export const reservationsRoutes: FastifyPluginAsync = async (fastify) => {
       },
     },
     controller.confirmReservation.bind(controller)
+  );
+
+  // GET / (Staff & Admin list all reservations schedule)
+  fastify.get(
+    '/',
+    {
+      preHandler: [fastify.authenticate, fastify.authorize([Role.STAFF, Role.ADMIN])],
+      schema: {
+        tags: ['Reservations'],
+        summary: 'List all reservations schedule with date & status filters (Staff/Admin)',
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            date: { type: 'string', description: 'YYYY-MM-DD' },
+            status: { type: 'string' },
+          },
+        },
+      },
+    },
+    controller.getAllReservations.bind(controller) as any
   );
 
   // GET /my-bookings (Authenticated Customer)
