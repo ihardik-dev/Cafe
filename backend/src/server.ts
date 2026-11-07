@@ -12,6 +12,7 @@ import { authRoutes } from './modules/auth/auth.routes.js';
 import { menuRoutes } from './modules/menu/menu.routes.js';
 import { ordersRoutes } from './modules/orders/orders.routes.js';
 import { reservationsRoutes } from './modules/reservations/reservations.routes.js';
+import { paymentsRoutes } from './modules/payments/payments.routes.js';
 
 export interface BuildAppOptions {
   prismaClient?: PrismaClient;
@@ -32,6 +33,26 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     origin: allowedOrigins.includes('*') ? true : allowedOrigins,
     credentials: true,
   });
+
+  // Parse JSON and text payloads, storing exact rawBody string for HMAC webhook signature verification
+  app.addContentTypeParser(
+    ['application/json', 'text/plain'],
+    { parseAs: 'string' },
+    (req, body: string, done) => {
+      (req as any).rawBody = body;
+      try {
+        const json = JSON.parse(body || '{}');
+        done(null, json);
+      } catch (err: any) {
+        // If content-type was text/plain and not JSON, pass string or return 400
+        if (req.headers['content-type']?.includes('application/json')) {
+          err.statusCode = 400;
+          return done(err, undefined);
+        }
+        done(null, body);
+      }
+    }
+  );
 
   // Core Plugins: Prisma DB & JWT Auth
   await app.register(prismaPlugin, { client: options.prismaClient });
@@ -76,6 +97,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(menuRoutes, { prefix: '/api/v1/menu' });
   await app.register(ordersRoutes, { prefix: '/api/v1/orders' });
   await app.register(reservationsRoutes, { prefix: '/api/v1/reservations' });
+  await app.register(paymentsRoutes, { prefix: '/api/v1/payments' });
 
   // Health check endpoint
   app.get('/health', async () => {
