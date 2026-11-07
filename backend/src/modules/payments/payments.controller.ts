@@ -105,10 +105,15 @@ export class PaymentsController {
 
     try {
       const adminId = request.user?.id || 'ADMIN';
+      const idempotencyKey =
+        (request.headers['idempotency-key'] as string | undefined) ||
+        parseResult.data.idempotencyKey;
       const result = await this.paymentsService.issueManualRefund(
         parseResult.data.orderId,
         parseResult.data.reason,
-        adminId
+        adminId,
+        idempotencyKey,
+        parseResult.data.amountInPaise
       );
       return reply.status(200).send(result);
     } catch (err: any) {

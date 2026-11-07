@@ -33,6 +33,8 @@ export const webhookPayloadSchema = z.object({
 export const manualRefundSchema = z.object({
   orderId: z.string().min(1, 'Order ID is required'),
   reason: z.string().min(3, 'Refund reason is required').max(200),
+  idempotencyKey: z.string().min(8).max(128).optional(),
+  amountInPaise: z.number().int().positive().optional(),
 });
 
 export type CreatePaymentIntentInput = z.infer<typeof createPaymentIntentSchema>;

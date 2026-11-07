@@ -501,6 +501,41 @@ export class ReservationsService {
       throw err;
     }
 
+    if (reservation.status === ReservationStatus.COMPLETED) {
+      const err: any = new Error('Completed reservations cannot be cancelled');
+      err.statusCode = 422;
+      err.code = 'RESERVATION_ALREADY_COMPLETED';
+      throw err;
+    }
+
+    if (this.prisma.reservation.updateMany) {
+      const updateResult = await this.prisma.reservation.updateMany({
+        where: { id: reservationId, status: ReservationStatus.CONFIRMED },
+        data: { status: ReservationStatus.CANCELLED },
+      });
+
+      if (updateResult.count !== 1) {
+        const latest = await this.prisma.reservation.findUnique({ where: { id: reservationId } });
+        if (latest?.status === ReservationStatus.CANCELLED) {
+          const err: any = new Error('Reservation is already cancelled');
+          err.statusCode = 400;
+          err.code = 'ALREADY_CANCELLED';
+          throw err;
+        }
+        if (latest?.status === ReservationStatus.COMPLETED) {
+          const err: any = new Error('Completed reservations cannot be cancelled');
+          err.statusCode = 422;
+          err.code = 'RESERVATION_ALREADY_COMPLETED';
+          throw err;
+        }
+      }
+
+      return this.prisma.reservation.findUnique({
+        where: { id: reservationId },
+        include: { table: true },
+      });
+    }
+
     return this.prisma.reservation.update({
       where: { id: reservationId },
       data: { status: ReservationStatus.CANCELLED },

@@ -296,8 +296,10 @@ model RefundAudit {
   amountInPaise   Int          // Amount in paise
   reason          String       // e.g. "LATE_WEBHOOK_RECEIVED_AFTER_EXPIRATION"
   gatewayRefundId String?
+  idempotencyKey  String?      @unique // Dedicated idempotency key for safe retries
   status          RefundStatus @default(PENDING)
   createdAt       DateTime     @default(now())
 
   @@index([orderId])
+  @@index([idempotencyKey])
 }

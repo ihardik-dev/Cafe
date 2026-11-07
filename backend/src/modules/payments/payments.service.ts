@@ -674,32 +674,44 @@ export class PaymentsService {
             },
           });
 
-          await tx.order.update({
-            where: { id: order.id },
-            data: {
-              status: OrderStatus.REFUNDED_LATE_WEBHOOK,
-              paymentId: paymentId || undefined,
-            },
-          });
+          if (refundStatus === RefundStatus.SUCCEEDED) {
+            await tx.order.update({
+              where: { id: order.id },
+              data: {
+                status: OrderStatus.REFUNDED_LATE_WEBHOOK,
+                paymentId: paymentId || undefined,
+              },
+            });
 
-          await tx.orderStatusHistory.create({
-            data: {
+            await tx.orderStatusHistory.create({
+              data: {
+                orderId: order.id,
+                fromStatus: OrderStatus.CANCELLED,
+                toStatus: OrderStatus.REFUNDED_LATE_WEBHOOK,
+                changedBy: 'SYSTEM_AUTO_REFUND',
+                reason: `Late payment webhook received after expiration. Automated refund of ₹${amountInPaise / 100} initiated (${gatewayRefundId}).`,
+              },
+            });
+
+            return {
+              isDuplicate: false,
+              action: 'AUTOMATIC_REFUND_ISSUED',
               orderId: order.id,
-              fromStatus: OrderStatus.CANCELLED,
-              toStatus: OrderStatus.REFUNDED_LATE_WEBHOOK,
-              changedBy: 'SYSTEM_AUTO_REFUND',
-              reason: `Late payment webhook received after expiration. Automated refund of ₹${amountInPaise / 100} initiated (${gatewayRefundId}).`,
-            },
-          });
-
-          return {
-            isDuplicate: false,
-            action: 'AUTOMATIC_REFUND_ISSUED',
-            orderId: order.id,
-            refundAmountInPaise: amountInPaise,
-            gatewayRefundId,
-            status: OrderStatus.REFUNDED_LATE_WEBHOOK,
-          };
+              refundAmountInPaise: amountInPaise,
+              gatewayRefundId,
+              status: OrderStatus.REFUNDED_LATE_WEBHOOK,
+            };
+          } else {
+            return {
+              isDuplicate: false,
+              action: 'AUTOMATIC_REFUND_FAILED',
+              orderId: order.id,
+              refundAmountInPaise: amountInPaise,
+              gatewayRefundId: null,
+              status: OrderStatus.CANCELLED,
+              message: 'Gateway refund call failed; order retained in CANCELLED status for manual reconciliation',
+            };
+          }
         }
 
         return {
@@ -741,10 +753,16 @@ export class PaymentsService {
   }
 
   // ----------------------------------------------------
-  // MANUAL REFUND OVERRIDE (ADMIN ONLY)
+  // MANUAL REFUND OVERRIDE (ADMIN ONLY) - DUAL-PHASE & IDEMPOTENT
   // ----------------------------------------------------
 
-  async issueManualRefund(orderId: string, reason: string, adminId: string) {
+  async issueManualRefund(
+    orderId: string,
+    reason: string,
+    adminId: string,
+    idempotencyKey?: string,
+    amountInPaise?: number
+  ) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
@@ -754,6 +772,25 @@ export class PaymentsService {
       err.statusCode = 404;
       err.code = 'ORDER_NOT_FOUND';
       throw err;
+    }
+
+    // 1. Idempotency Check: Return existing refund if key matches
+    if (idempotencyKey) {
+      const existingRefund = await this.prisma.refundAudit.findUnique({
+        where: { idempotencyKey },
+      });
+      if (existingRefund) {
+        return {
+          order,
+          refund: {
+            gatewayRefundId: existingRefund.gatewayRefundId,
+            amountInPaise: existingRefund.amountInPaise,
+            reason: existingRefund.reason,
+            status: existingRefund.status,
+            isDuplicate: true,
+          },
+        };
+      }
     }
 
     const refundableStatuses: OrderStatus[] = [
@@ -771,14 +808,91 @@ export class PaymentsService {
       throw err;
     }
 
-    // Payment ID resolution: Order stores the actual Razorpay Payment ID (pay_xxxx)
-    const paymentIdToRefund = order.paymentId || (order.paymentIntentId?.startsWith('pay_') ? order.paymentIntentId : null);
+    const refundAmount = amountInPaise || order.totalInPaise;
 
-    let gatewayRefundId: string;
-    let refundStatus: RefundStatus = RefundStatus.SUCCEEDED;
+    // 2. Cumulative Refund Cap Verification:
+    // Total refunds cannot exceed captured payment amount
+    const priorRefunds = await this.prisma.refundAudit.findMany({
+      where: {
+        orderId: order.id,
+        status: { in: [RefundStatus.SUCCEEDED, RefundStatus.PENDING] },
+      },
+    });
+
+    const totalPriorRefunded = priorRefunds.reduce((sum, r) => sum + r.amountInPaise, 0);
+    if (totalPriorRefunded + refundAmount > order.totalInPaise) {
+      const availableBalance = order.totalInPaise - totalPriorRefunded;
+      const err: any = new Error(
+        `Refund amount (₹${refundAmount / 100}) exceeds available refundable balance (₹${availableBalance / 100})`
+      );
+      err.statusCode = 400;
+      err.code = 'REFUND_EXCEEDS_PAYMENT_AMOUNT';
+      throw err;
+    }
+
+    // Payment ID resolution: Order stores the actual Razorpay Payment ID (pay_xxxx)
+    const paymentIdToRefund =
+      order.paymentId || (order.paymentIntentId?.startsWith('pay_') ? order.paymentIntentId : null);
+
+    // Phase 1 (DB): Atomically transition order and create PENDING refund record
+    // This locks out any racing admin from refunding the same order simultaneously!
+    const pendingAudit = await this.prisma.$transaction(async (tx) => {
+      if (tx.order.updateMany) {
+        const updateResult = await tx.order.updateMany({
+          where: {
+            id: order.id,
+            status: order.status,
+          },
+          data: {
+            status: OrderStatus.REFUNDED,
+          },
+        });
+
+        if (updateResult.count !== 1) {
+          const err: any = new Error(
+            'Order is already refunded or undergoing concurrent refund'
+          );
+          err.statusCode = 409;
+          err.code = 'CONCURRENT_REFUND_CONFLICT';
+          throw err;
+        }
+      } else {
+        await tx.order.update({
+          where: { id: order.id },
+          data: { status: OrderStatus.REFUNDED },
+        });
+      }
+
+      return tx.refundAudit.create({
+        data: {
+          orderId: order.id,
+          paymentIntentId: order.paymentIntentId || 'pi_manual_override',
+          amountInPaise: refundAmount,
+          reason: `MANUAL_ADMIN_REFUND: ${reason}`,
+          idempotencyKey: idempotencyKey || null,
+          status: RefundStatus.PENDING,
+        },
+      });
+    });
+
+    // Phase 2 (Gateway Call): Execute external Razorpay refund call OUTSIDE database transaction
+    let gatewayRefundId: string | null = null;
+    let gatewayError: any = null;
 
     if (this.razorpay?.payments?.refund && (this.isCustomClient || env.NODE_ENV !== 'test')) {
       if (!paymentIdToRefund) {
+        // Revert status and fail
+        await this.prisma.order.update({
+          where: { id: order.id },
+          data: { status: order.status },
+        });
+        await this.prisma.refundAudit.update({
+          where: { id: pendingAudit.id },
+          data: {
+            status: RefundStatus.FAILED,
+            reason: `MANUAL_ADMIN_REFUND_FAILED: ${reason}`,
+          },
+        });
         const err: any = new Error(
           'Cannot process gateway refund: No valid Razorpay payment ID (pay_xxxx) associated with this order'
         );
@@ -789,69 +903,83 @@ export class PaymentsService {
 
       try {
         const rzpRefund = await this.razorpay.payments.refund(paymentIdToRefund, {
-          amount: order.totalInPaise,
-          notes: { reason },
+          amount: refundAmount,
+          notes: { reason, idempotencyKey: idempotencyKey || undefined },
         });
         gatewayRefundId = rzpRefund.id;
       } catch (rzpErr: any) {
-        // Financial Safety: Log the failed refund attempt in the audit table with FAILED status
-        await this.prisma.refundAudit.create({
-          data: {
-            orderId: order.id,
-            paymentIntentId: order.paymentIntentId || 'pi_manual_override',
-            amountInPaise: order.totalInPaise,
-            reason: `MANUAL_ADMIN_REFUND_FAILED: ${reason}`,
-            status: RefundStatus.FAILED,
-          },
-        });
-
-        const err: any = new Error(
-          rzpErr.error?.description || rzpErr.message || 'Payment gateway refund failed. Order was not refunded.'
-        );
-        err.statusCode = 502;
-        err.code = 'GATEWAY_REFUND_FAILED';
-        throw err;
+        gatewayError = rzpErr;
       }
     } else {
       // In-memory test mock fallback
       gatewayRefundId = `rfnd_manual_${crypto.randomBytes(12).toString('hex')}`;
     }
 
-    return this.prisma.$transaction(async (tx) => {
-      await tx.refundAudit.create({
-        data: {
-          orderId: order.id,
-          paymentIntentId: order.paymentIntentId || 'pi_manual_override',
-          amountInPaise: order.totalInPaise,
-          reason: `MANUAL_ADMIN_REFUND: ${reason}`,
-          gatewayRefundId,
-          status: refundStatus,
-        },
-      });
+    // Phase 3 (DB Finalization): Finalize refund status based on gateway result
+    if (gatewayError || !gatewayRefundId) {
+      // Gateway call failed: mark FAILED in DB and revert order status back to original!
+      if (this.prisma.refundAudit.update) {
+        await this.prisma.refundAudit.update({
+          where: { id: pendingAudit.id },
+          data: {
+            status: RefundStatus.FAILED,
+            reason: `MANUAL_ADMIN_REFUND_FAILED: ${reason}`,
+          },
+        });
+      } else if (pendingAudit) {
+        pendingAudit.status = RefundStatus.FAILED;
+        pendingAudit.reason = `MANUAL_ADMIN_REFUND_FAILED: ${reason}`;
+      }
 
-      const updated = await tx.order.update({
+      await this.prisma.order.update({
         where: { id: order.id },
-        data: { status: OrderStatus.REFUNDED },
+        data: { status: order.status },
       });
 
-      await tx.orderStatusHistory.create({
+      const err: any = new Error(
+        gatewayError?.error?.description ||
+          gatewayError?.message ||
+          'Payment gateway refund failed. Order was not refunded.'
+      );
+      err.statusCode = 502;
+      err.code = 'GATEWAY_REFUND_FAILED';
+      throw err;
+    }
+
+    // Gateway call succeeded: mark SUCCEEDED and create audit trail
+    if (this.prisma.refundAudit.update) {
+      await this.prisma.refundAudit.update({
+        where: { id: pendingAudit.id },
         data: {
-          orderId: order.id,
-          fromStatus: order.status,
-          toStatus: OrderStatus.REFUNDED,
-          changedBy: adminId,
-          reason: `Manual refund of ₹${order.totalInPaise / 100} issued by Admin: ${reason}`,
+          status: RefundStatus.SUCCEEDED,
+          gatewayRefundId,
         },
       });
+    } else if (pendingAudit) {
+      pendingAudit.status = RefundStatus.SUCCEEDED;
+      pendingAudit.gatewayRefundId = gatewayRefundId;
+    }
 
-      return {
-        order: updated,
-        refund: {
-          gatewayRefundId,
-          amountInPaise: order.totalInPaise,
-          reason,
-        },
-      };
+    await this.prisma.orderStatusHistory.create({
+      data: {
+        orderId: order.id,
+        fromStatus: order.status,
+        toStatus: OrderStatus.REFUNDED,
+        changedBy: adminId,
+        reason: `Manual refund of ₹${refundAmount / 100} completed by Admin: ${reason} (Gateway ID: ${gatewayRefundId})`,
+      },
     });
+
+    const updated = await this.prisma.order.findUnique({ where: { id: order.id } });
+
+    return {
+      order: updated,
+      refund: {
+        gatewayRefundId,
+        amountInPaise: refundAmount,
+        reason,
+        status: RefundStatus.SUCCEEDED,
+      },
+    };
   }
 }

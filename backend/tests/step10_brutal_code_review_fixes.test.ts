@@ -253,6 +253,13 @@ function createMockPrisma() {
         refundAudits.set(id, audit);
         return { ...audit };
       },
+      async update({ where, data }: any) {
+        const a = refundAudits.get(where.id);
+        if (!a) throw new Error('Refund audit not found');
+        const updated = { ...a, ...data, updatedAt: new Date() };
+        refundAudits.set(where.id, updated);
+        return { ...updated };
+      },
       async findMany({ where }: any) {
         let list = Array.from(refundAudits.values());
         if (where?.orderId) {

@@ -2,11 +2,23 @@ import { z } from 'zod';
 import { OrderStatus } from '@prisma/client';
 import { positiveQuantitySchema } from '../menu/menu.schema.js';
 
-export const checkoutItemSchema = z.object({
-  menuItemId: z.string().min(1, 'Invalid menu item ID'),
-  quantity: positiveQuantitySchema,
-  selectedModifierOptionIds: z.array(z.string().min(1, 'Invalid modifier option ID')).default([]),
-});
+export const checkoutItemSchema = z
+  .object({
+    menuItemId: z.string().min(1, 'Invalid menu item ID'),
+    quantity: positiveQuantitySchema,
+    selectedModifierOptionIds: z.array(z.string().min(1, 'Invalid modifier option ID')).default([]),
+  })
+  .superRefine((data, ctx) => {
+    const ids = data.selectedModifierOptionIds || [];
+    const uniqueIds = new Set(ids);
+    if (uniqueIds.size !== ids.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: 'Duplicate modifier options are not permitted for an item',
+        path: ['selectedModifierOptionIds'],
+      });
+    }
+  });
 
 export const checkoutRequestSchema = z.object({
   idempotencyKey: z

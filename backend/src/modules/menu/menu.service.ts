@@ -357,16 +357,27 @@ export class MenuService {
           include: { inventory: true },
         });
 
-        if (!menuItem || !menuItem.isPerishable || !menuItem.inventory) {
+        if (!menuItem || !menuItem.isPerishable) {
           // Non-perishable items don't have finite daily limits
           continue;
+        }
+
+        // Perishable item MUST have an inventory record.
+        // If missing, fail closed to prevent infinite stock loopholes!
+        if (!menuItem.inventory) {
+          const err: any = new Error(
+            `Inventory record missing for perishable item "${menuItem.name}". System fails closed to prevent infinite overselling.`
+          );
+          err.statusCode = 500;
+          err.code = 'INVENTORY_RECORD_MISSING';
+          throw err;
         }
 
         // Database-level conditional atomic decrement:
         // Guarantees zero negative stock even under extreme concurrency!
         const updateResult = await client.inventoryItem.updateMany({
           where: {
-            id: menuItem.inventory.id,
+            menuItemId: item.menuItemId,
             stockQuantity: {
               gte: item.quantity,
             },
@@ -378,7 +389,7 @@ export class MenuService {
           },
         });
 
-        if (updateResult.count === 0) {
+        if (updateResult.count !== 1) {
           const err: any = new Error(
             `Insufficient stock for "${menuItem.name}". Available stock is less than requested quantity (${item.quantity}).`
           );
