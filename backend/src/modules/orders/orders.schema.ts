@@ -1,16 +1,17 @@
 import { z } from 'zod';
+import { OrderStatus } from '@prisma/client';
 import { positiveQuantitySchema } from '../menu/menu.schema.js';
 
 export const checkoutItemSchema = z.object({
-  menuItemId: z.string().uuid('Invalid menu item ID'),
+  menuItemId: z.string().min(1, 'Invalid menu item ID'),
   quantity: positiveQuantitySchema,
-  selectedModifierOptionIds: z.array(z.string().uuid('Invalid modifier option ID')).default([]),
+  selectedModifierOptionIds: z.array(z.string().min(1, 'Invalid modifier option ID')).default([]),
 });
 
 export const checkoutRequestSchema = z.object({
   idempotencyKey: z
     .string()
-    .min(10, 'Idempotency key must be at least 10 characters')
+    .min(8, 'Idempotency key must be at least 8 characters')
     .max(128, 'Idempotency key too long'),
   items: z
     .array(checkoutItemSchema)
@@ -21,5 +22,13 @@ export const checkoutRequestSchema = z.object({
   customerNote: z.string().max(250, 'Customer note cannot exceed 250 characters').optional(),
 });
 
+export const updateOrderStatusSchema = z.object({
+  status: z.nativeEnum(OrderStatus, {
+    message: 'Invalid order status transition target',
+  }),
+  reason: z.string().max(200).optional(),
+});
+
 export type CheckoutRequestInput = z.infer<typeof checkoutRequestSchema>;
 export type CheckoutItemInput = z.infer<typeof checkoutItemSchema>;
+export type UpdateOrderStatusInput = z.infer<typeof updateOrderStatusSchema>;

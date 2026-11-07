@@ -14,6 +14,7 @@ export interface UserTokenPayload {
 declare module 'fastify' {
   interface FastifyInstance {
     authenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
+    optionalAuthenticate: (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
     authorize: (allowedRoles: Role[]) => (request: FastifyRequest, reply: FastifyReply) => Promise<void>;
   }
 }
@@ -77,6 +78,21 @@ const authPlugin: FastifyPluginAsync = async (fastify) => {
         message: 'Invalid or forged authentication token',
         code: 'AUTH_TOKEN_INVALID',
       });
+    }
+  });
+
+  // Optional authentication: extracts user if header is present, but does not block guests
+  fastify.decorate('optionalAuthenticate', async (request: FastifyRequest) => {
+    const authHeader = request.headers.authorization;
+    if (!authHeader) return;
+
+    const parts = authHeader.split(' ');
+    if (parts.length === 2 && parts[0]?.toLowerCase() === 'bearer' && parts[1]) {
+      try {
+        await request.jwtVerify();
+      } catch {
+        // Guest mode: continue without user attachment
+      }
     }
   });
 

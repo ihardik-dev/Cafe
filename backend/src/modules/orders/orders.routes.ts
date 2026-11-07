@@ -1,0 +1,118 @@
+import { FastifyPluginAsync } from 'fastify';
+import { MenuService } from '../menu/menu.service.js';
+import { OrdersService } from './orders.service.js';
+import { OrdersController } from './orders.controller.js';
+
+export const ordersRoutes: FastifyPluginAsync = async (fastify) => {
+  const menuService = new MenuService(fastify.prisma);
+  const ordersService = new OrdersService(fastify.prisma, menuService);
+  const controller = new OrdersController(ordersService);
+
+  // POST /checkout (Guest or Authenticated Customer)
+  fastify.post(
+    '/checkout',
+    {
+      preHandler: [fastify.optionalAuthenticate],
+      schema: {
+        tags: ['Orders'],
+        summary: 'Place and checkout an order (calculates prices & reserves inventory atomically)',
+        body: {
+          type: 'object',
+          required: ['idempotencyKey', 'items'],
+          properties: {
+            idempotencyKey: { type: 'string', minLength: 8 },
+            customerEmail: { type: 'string', format: 'email' },
+            customerPhone: { type: 'string' },
+            customerNote: { type: 'string' },
+            items: {
+              type: 'array',
+              minItems: 1,
+              items: {
+                type: 'object',
+                required: ['menuItemId', 'quantity'],
+                properties: {
+                  menuItemId: { type: 'string' },
+                  quantity: { type: 'integer', minimum: 1, maximum: 100 },
+                  selectedModifierOptionIds: {
+                    type: 'array',
+                    items: { type: 'string' },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    controller.checkout.bind(controller)
+  );
+
+  // GET /my-orders (Authenticated Customer)
+  fastify.get(
+    '/my-orders',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Orders'],
+        summary: 'View order history for authenticated customer',
+        security: [{ bearerAuth: [] }],
+      },
+    },
+    controller.getMyOrders.bind(controller)
+  );
+
+  // GET /:orderId (Customer or Staff)
+  fastify.get(
+    '/:orderId',
+    {
+      preHandler: [fastify.optionalAuthenticate],
+      schema: {
+        tags: ['Orders'],
+        summary: 'Get order details, items, pricing breakdown, and status history',
+        params: {
+          type: 'object',
+          required: ['orderId'],
+          properties: { orderId: { type: 'string' } },
+        },
+      },
+    },
+    controller.getOrderById.bind(controller) as any
+  );
+
+  // PATCH /:orderId/status (State Machine Transition)
+  fastify.patch(
+    '/:orderId/status',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        tags: ['Orders'],
+        summary: 'Transition order state (guarded by state machine & RBAC)',
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['orderId'],
+          properties: { orderId: { type: 'string' } },
+        },
+        body: {
+          type: 'object',
+          required: ['status'],
+          properties: {
+            status: {
+              type: 'string',
+              enum: [
+                'CONFIRMED',
+                'PREPARING',
+                'READY_FOR_PICKUP',
+                'COMPLETED',
+                'CANCELLED',
+                'REFUNDED',
+              ],
+            },
+            reason: { type: 'string' },
+          },
+        },
+      },
+    },
+    controller.updateOrderStatus.bind(controller) as any
+  );
+};

@@ -250,8 +250,9 @@ export class MenuService {
     // Group selected options by their parent modifier group
     const selectedByGroup = new Map<string, any[]>();
     const validatedModifiers: { modifierOptionId: string; name: string; extraPriceInPaise: number }[] = [];
+    const optionIdsToProcess = cartItem.selectedModifierOptionIds || [];
 
-    for (const optId of cartItem.selectedModifierOptionIds) {
+    for (const optId of optionIdsToProcess) {
       const entry = allowedOptionMap.get(optId);
 
       // Adversarial Check: Disallow injecting modifiers from other items
@@ -325,17 +326,18 @@ export class MenuService {
   /**
    * Atomically decrements stock for perishable items with zero race conditions.
    * If stock is insufficient, rolls back and throws INSUFFICIENT_STOCK.
+   * Accepts an optional existing transaction client (tx) to prevent nested transaction deadlocks!
    */
-  async deductInventoryAtomic(items: { menuItemId: string; quantity: number }[]) {
-    return this.prisma.$transaction(async (tx) => {
+  async deductInventoryAtomic(items: { menuItemId: string; quantity: number }[], tx?: any) {
+    const execute = async (client: any) => {
       for (const item of items) {
-        const menuItem = await tx.menuItem.findUnique({
+        const menuItem = await client.menuItem.findUnique({
           where: { id: item.menuItemId },
           include: { inventory: true },
         });
 
         if (!menuItem || !menuItem.isPerishable || !menuItem.inventory) {
-          // Non-perishable items (like standard espresso beans or tea) don't have finite daily limits
+          // Non-perishable items don't have finite daily limits
           continue;
         }
 
@@ -350,7 +352,7 @@ export class MenuService {
         }
 
         // Atomic decrement
-        await tx.inventoryItem.update({
+        await client.inventoryItem.update({
           where: { id: menuItem.inventory.id },
           data: {
             stockQuantity: {
@@ -359,16 +361,21 @@ export class MenuService {
           },
         });
       }
-    });
+    };
+
+    if (tx) {
+      return execute(tx);
+    }
+    return this.prisma.$transaction(execute);
   }
 
   /**
    * Atomically restores inventory stock when an order is cancelled or times out.
    */
-  async restoreInventoryAtomic(items: { menuItemId: string; quantity: number }[]) {
-    return this.prisma.$transaction(async (tx) => {
+  async restoreInventoryAtomic(items: { menuItemId: string; quantity: number }[], tx?: any) {
+    const execute = async (client: any) => {
       for (const item of items) {
-        const menuItem = await tx.menuItem.findUnique({
+        const menuItem = await client.menuItem.findUnique({
           where: { id: item.menuItemId },
           include: { inventory: true },
         });
@@ -377,7 +384,7 @@ export class MenuService {
           continue;
         }
 
-        await tx.inventoryItem.update({
+        await client.inventoryItem.update({
           where: { id: menuItem.inventory.id },
           data: {
             stockQuantity: {
@@ -386,6 +393,11 @@ export class MenuService {
           },
         });
       }
-    });
+    };
+
+    if (tx) {
+      return execute(tx);
+    }
+    return this.prisma.$transaction(execute);
   }
 }
