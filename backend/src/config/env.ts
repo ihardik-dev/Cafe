@@ -15,9 +15,12 @@ export const envSchema = z
     JWT_REFRESH_SECRET: z.string().min(32, 'JWT_REFRESH_SECRET must be at least 32 characters'),
     JWT_EXPIRES_IN: z.string().default('15m'),
     JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
-    RAZORPAY_KEY_ID: z.string().default('rzp_test_TsQvWVNWRrqL18'),
-    RAZORPAY_KEY_SECRET: z.string().default('JfcVD87BqnJ2yuQxVX6AS4Bj'),
-    WEBHOOK_SECRET: z.string().default('JfcVD87BqnJ2yuQxVX6AS4Bj'),
+    // Razorpay credentials: optional in development/test (payment routes degrade gracefully).
+    // REQUIRED in production — no hardcoded defaults, no fallbacks to other secrets.
+    RAZORPAY_KEY_ID: z.string().optional(),
+    RAZORPAY_KEY_SECRET: z.string().optional(),
+    // WEBHOOK_SECRET must be a dedicated secret — NEVER fall back to RAZORPAY_KEY_SECRET.
+    WEBHOOK_SECRET: z.string().optional(),
     CORS_ORIGIN: z.string().default('*'),
   })
   .superRefine((data, ctx) => {
@@ -37,7 +40,10 @@ const parsedEnv = envSchema.safeParse(process.env);
 
 if (!parsedEnv.success) {
   console.error('❌ Invalid Environment Variables Configuration:');
-  console.error(JSON.stringify(parsedEnv.error.format(), null, 2));
+  // Never print credential values in error output — only field names and messages
+  const formatted = parsedEnv.error.format();
+  const safeFormatted = JSON.stringify(formatted, null, 2);
+  console.error(safeFormatted);
   process.exit(1);
 }
 

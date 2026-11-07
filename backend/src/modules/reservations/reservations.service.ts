@@ -172,25 +172,33 @@ export class ReservationsService {
       }
 
       // Acquire table row lock inside transaction via $queryRaw FOR UPDATE. Never silently swallow lock failure!
-      if (tx.$queryRaw) {
-        const lockedTables = await tx.$queryRaw<Array<{ id: string }>>`
-          SELECT id
-          FROM "Table"
-          WHERE id = ${table.id}
-          FOR UPDATE
-        `;
+      // The lock is UNCONDITIONAL — never skip it.
+      const lockedTables = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id
+        FROM "Table"
+        WHERE id = ${table.id}
+        FOR UPDATE
+      `;
 
-        if (!lockedTables || lockedTables.length === 0) {
-          const err: any = new Error('Table not found or lock acquisition failed');
-          err.statusCode = 404;
-          err.code = 'TABLE_NOT_FOUND';
-          throw err;
-        }
+      if (!lockedTables || lockedTables.length === 0) {
+        const err: any = new Error('Table not found or lock acquisition failed');
+        err.statusCode = 404;
+        err.code = 'TABLE_NOT_FOUND';
+        throw err;
       }
 
-      if (table.capacity < input.guestCount) {
+      // Re-fetch table AFTER lock to ensure we have authoritative post-lock state
+      const lockedTable = await tx.table.findUnique({ where: { id: table.id } });
+      if (!lockedTable || !lockedTable.isActive) {
+        const err: any = new Error('Table not found or is currently inactive');
+        err.statusCode = 404;
+        err.code = 'TABLE_NOT_FOUND';
+        throw err;
+      }
+
+      if (lockedTable.capacity < input.guestCount) {
         const err: any = new Error(
-          `Table #${table.tableNumber} has a maximum capacity of ${table.capacity} guests. Cannot book for ${input.guestCount} guests.`
+          `Table #${lockedTable.tableNumber} has a maximum capacity of ${lockedTable.capacity} guests. Cannot book for ${input.guestCount} guests.`
         );
         err.statusCode = 400;
         err.code = 'TABLE_CAPACITY_EXCEEDED';
@@ -200,7 +208,7 @@ export class ReservationsService {
       // 2. Clear any expired holds on this table so they don't block legitimate bookings
       await tx.reservationHold.deleteMany({
         where: {
-          tableId: table.id,
+          tableId: lockedTable.id,
           expiresAt: { lte: now },
         },
       });
@@ -316,20 +324,19 @@ export class ReservationsService {
       }
 
       // Step 1: Lock the table FIRST inside the transaction using $queryRaw FOR UPDATE. Never swallow failure!
-      if (tx.$queryRaw) {
-        const lockedTables = await tx.$queryRaw<Array<{ id: string }>>`
-          SELECT id
-          FROM "Table"
-          WHERE id = ${preliminaryHold.tableId}
-          FOR UPDATE
-        `;
+      // The lock is UNCONDITIONAL — never skip it.
+      const lockedTablesConfirm = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT id
+        FROM "Table"
+        WHERE id = ${preliminaryHold.tableId}
+        FOR UPDATE
+      `;
 
-        if (!lockedTables || lockedTables.length === 0) {
-          const err: any = new Error('Table not found or lock acquisition failed');
-          err.statusCode = 404;
-          err.code = 'TABLE_NOT_FOUND';
-          throw err;
-        }
+      if (!lockedTablesConfirm || lockedTablesConfirm.length === 0) {
+        const err: any = new Error('Table not found or lock acquisition failed');
+        err.statusCode = 404;
+        err.code = 'TABLE_NOT_FOUND';
+        throw err;
       }
 
       // Step 2: Re-fetch the hold AFTER obtaining the table lock!
@@ -357,10 +364,11 @@ export class ReservationsService {
         throw err;
       }
 
-      // Step 3: Re-verify party size does not exceed table capacity (Fix for Review Issue E)
-      if (guestDetails.guestCount > hold.table.capacity) {
+      // Step 3: Re-verify party size does not exceed table capacity (Fix for Review Issue E & Fix E1)
+      if (guestDetails.guestCount > hold.table.capacity || hold.guestCount > hold.table.capacity) {
+        const count = guestDetails.guestCount > hold.table.capacity ? guestDetails.guestCount : hold.guestCount;
         const err: any = new Error(
-          `Cannot confirm reservation for ${guestDetails.guestCount} guests. Table ${hold.table.tableNumber} maximum capacity is ${hold.table.capacity}.`
+          `Cannot confirm reservation for ${count} guests. Table ${hold.table.tableNumber} maximum capacity is ${hold.table.capacity}.`
         );
         err.statusCode = 422;
         err.code = 'CAPACITY_EXCEEDED';
@@ -418,7 +426,7 @@ export class ReservationsService {
           customerName: guestDetails.customerName,
           customerEmail: guestDetails.customerEmail,
           customerPhone: guestDetails.customerPhone,
-          guestCount: guestDetails.guestCount,
+          guestCount: hold.guestCount, // AUTHORITATIVE: use hold's guestCount, not request body
           guestAccessTokenHash: guestAccessTokenHash || null,
           startTime: hold.slotStartTime,
           endTime: hold.slotEndTime,

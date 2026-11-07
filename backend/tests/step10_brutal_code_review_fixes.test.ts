@@ -395,6 +395,9 @@ function createMockPrisma() {
     async $executeRawUnsafe() {
       return 1;
     },
+    async $queryRaw() {
+      return [{ id: 'mock-lock' }];
+    },
     $disconnect: async () => {},
   };
 

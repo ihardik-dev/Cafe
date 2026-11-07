@@ -165,6 +165,8 @@ function createInMemoryPrisma() {
           if (where?.id && o.id !== where.id) continue;
           if (where?.paymentIntentId && o.paymentIntentId !== where.paymentIntentId) continue;
           if (where?.status && o.status !== where.status) continue;
+          if (where?.idempotencyKey && o.idempotencyKey !== where.idempotencyKey) continue;
+          if (where?.idempotencyScope && o.idempotencyScope !== where.idempotencyScope) continue;
           const res: any = { ...o };
           if (include?.items) {
             res.items = Array.from(orderItems.values()).filter((i) => i.orderId === o.id);

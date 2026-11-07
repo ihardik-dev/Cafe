@@ -36,7 +36,11 @@ export class PaymentsService {
       return false;
     }
 
-    const secret = env.WEBHOOK_SECRET || env.RAZORPAY_KEY_SECRET;
+    const secret = env.WEBHOOK_SECRET;
+    if (!secret) {
+      // No dedicated webhook secret configured — reject all webhooks rather than fall back to payment secret
+      return false;
+    }
     const hmac = crypto.createHmac('sha256', secret);
     hmac.update(rawBody);
     const expectedSignature = hmac.digest('hex');
@@ -65,8 +69,13 @@ export class PaymentsService {
     }
 
     const body = `${razorpayOrderId}|${razorpayPaymentId}`;
+    const keySecret = env.RAZORPAY_KEY_SECRET;
+    if (!keySecret) {
+      // No key secret configured — cannot verify checkout signature
+      return false;
+    }
     const expectedSignature = crypto
-      .createHmac('sha256', env.RAZORPAY_KEY_SECRET)
+      .createHmac('sha256', keySecret)
       .update(body)
       .digest('hex');
 
@@ -157,25 +166,40 @@ export class PaymentsService {
 
     // Create real Razorpay test order if not already created
     if (!razorpayOrderId || !razorpayOrderId.startsWith('order_')) {
-      if (this.razorpay?.orders?.create) {
-        try {
-          const rzpOrder = await this.razorpay.orders.create({
-            amount: order.totalInPaise,
-            currency: 'INR',
-            receipt: order.orderNumber,
-            notes: {
-              orderId: order.id,
-              orderNumber: order.orderNumber,
-            },
-          });
-          razorpayOrderId = rzpOrder.id;
-        } catch (rzpErr: any) {
-          // If network / quota issues in test environment, fallback gracefully
-          razorpayOrderId = `order_${crypto.randomBytes(10).toString('hex')}`;
-        }
-      } else {
-        razorpayOrderId = `order_${crypto.randomBytes(10).toString('hex')}`;
+      if (!this.razorpay?.orders?.create) {
+        // No gateway client available — cannot create payment intent
+        const err: any = new Error(
+          'Payment gateway is not configured. Cannot create payment intent.'
+        );
+        err.statusCode = 503;
+        err.code = 'PAYMENT_GATEWAY_UNAVAILABLE';
+        throw err;
       }
+
+      // Create the Razorpay order. Any gateway failure is surfaced as a 502 — never faked.
+      let rzpOrder: any;
+      try {
+        rzpOrder = await this.razorpay.orders.create({
+          amount: order.totalInPaise,
+          currency: 'INR',
+          receipt: order.orderNumber,
+          notes: {
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+          },
+        });
+      } catch (rzpErr: any) {
+        const err: any = new Error(
+          rzpErr?.error?.description ||
+            rzpErr?.message ||
+            'Payment gateway order creation failed. Please try again.'
+        );
+        err.statusCode = 502;
+        err.code = 'GATEWAY_ORDER_CREATION_FAILED';
+        throw err;
+      }
+
+      razorpayOrderId = rzpOrder.id;
 
       await this.prisma.order.update({
         where: { id: order.id },
@@ -188,7 +212,7 @@ export class PaymentsService {
       orderNumber: order.orderNumber,
       razorpayOrderId,
       paymentIntentId: razorpayOrderId,
-      keyId: env.RAZORPAY_KEY_ID,
+      keyId: env.RAZORPAY_KEY_ID || null,
       amountInPaise: order.totalInPaise,
       currency: 'INR',
       expiresAt: order.expiresAt,
@@ -283,42 +307,86 @@ export class PaymentsService {
       }
     }
 
-    // Gateway Payment Verification (Order association, Amount in Paise, Currency INR)
-    if (this.razorpay?.payments?.fetch) {
+    // Gateway Payment Verification (fail-closed): Order association, captured status, Amount, Currency.
+    // If the gateway client is a custom test-injected client, it may implement fetch selectively.
+    // For the real Razorpay client, payments.fetch MUST be available; if not, reject verification.
+    if (this.razorpay) {
+      if (!this.razorpay.payments?.fetch) {
+        const err: any = new Error(
+          'Payment gateway verification is not available. Cannot confirm payment.'
+        );
+        err.statusCode = 503;
+        err.code = 'PAYMENT_VERIFICATION_UNAVAILABLE';
+        throw err;
+      }
       try {
         const paymentDetails = await this.razorpay.payments.fetch(input.razorpayPaymentId);
-        if (paymentDetails) {
-          if (paymentDetails.order_id && paymentDetails.order_id !== input.razorpayOrderId) {
-            const err: any = new Error('Gateway payment order_id does not match Razorpay order ID');
-            err.statusCode = 400;
-            err.code = 'GATEWAY_ORDER_MISMATCH';
-            throw err;
-          }
-          if (paymentDetails.amount !== undefined && paymentDetails.amount !== order.totalInPaise) {
-            const err: any = new Error(
-              `Gateway payment amount (₹${paymentDetails.amount / 100}) does not match order total (₹${order.totalInPaise / 100})`
-            );
-            err.statusCode = 400;
-            err.code = 'PAYMENT_AMOUNT_MISMATCH';
-            throw err;
-          }
-          if (paymentDetails.currency && paymentDetails.currency !== 'INR') {
-            const err: any = new Error('Gateway payment currency must be INR');
-            err.statusCode = 400;
-            err.code = 'PAYMENT_CURRENCY_MISMATCH';
-            throw err;
-          }
+        if (!paymentDetails) {
+          const err: any = new Error('Payment gateway returned empty response');
+          err.statusCode = 502;
+          err.code = 'GATEWAY_EMPTY_RESPONSE';
+          throw err;
+        }
+
+        // 1. Captured status: payment MUST be captured, not just authorized
+        if (paymentDetails.status !== 'captured') {
+          const err: any = new Error(
+            `Gateway payment status is "${paymentDetails.status}", expected "captured". Payment not confirmed.`
+          );
+          err.statusCode = 400;
+          err.code = 'PAYMENT_NOT_CAPTURED';
+          throw err;
+        }
+
+        // 2. Order binding: payment must belong to the expected Razorpay order
+        if (paymentDetails.order_id && paymentDetails.order_id !== input.razorpayOrderId) {
+          const err: any = new Error('Gateway payment order_id does not match Razorpay order ID');
+          err.statusCode = 400;
+          err.code = 'GATEWAY_ORDER_MISMATCH';
+          throw err;
+        }
+
+        // 3. Amount: must match order total in paise exactly
+        if (paymentDetails.amount !== undefined && paymentDetails.amount !== order.totalInPaise) {
+          const err: any = new Error(
+            `Gateway payment amount (₹${paymentDetails.amount / 100}) does not match order total (₹${order.totalInPaise / 100})`
+          );
+          err.statusCode = 400;
+          err.code = 'PAYMENT_AMOUNT_MISMATCH';
+          throw err;
+        }
+
+        // 4. Currency: must be INR
+        if (paymentDetails.currency && paymentDetails.currency !== 'INR') {
+          const err: any = new Error('Gateway payment currency must be INR');
+          err.statusCode = 400;
+          err.code = 'PAYMENT_CURRENCY_MISMATCH';
+          throw err;
         }
       } catch (rzpFetchErr: any) {
+        // Re-throw all our own validation errors
         if (
+          rzpFetchErr.code === 'PAYMENT_NOT_CAPTURED' ||
           rzpFetchErr.code === 'GATEWAY_ORDER_MISMATCH' ||
           rzpFetchErr.code === 'PAYMENT_AMOUNT_MISMATCH' ||
-          rzpFetchErr.code === 'PAYMENT_CURRENCY_MISMATCH'
+          rzpFetchErr.code === 'PAYMENT_CURRENCY_MISMATCH' ||
+          rzpFetchErr.code === 'GATEWAY_EMPTY_RESPONSE' ||
+          rzpFetchErr.code === 'PAYMENT_VERIFICATION_UNAVAILABLE'
         ) {
           throw rzpFetchErr;
         }
+        // Custom test client errors (statusCode set by the mock) are always propagated
         if (this.isCustomClient && rzpFetchErr.statusCode) {
           throw rzpFetchErr;
+        }
+        // Real gateway network failure — surface as 502 in production, not silently ignored
+        if (!this.isCustomClient && env.NODE_ENV !== 'test') {
+          const err: any = new Error(
+            rzpFetchErr?.message || 'Payment gateway fetch failed. Cannot verify payment.'
+          );
+          err.statusCode = 502;
+          err.code = 'GATEWAY_FETCH_FAILED';
+          throw err;
         }
       }
     }
@@ -352,7 +420,7 @@ export class PaymentsService {
           gatewayRefundId = null;
           refundStatus = RefundStatus.FAILED;
         }
-      } else {
+      } else if (env.NODE_ENV === 'test') {
         gatewayRefundId = `rfnd_${crypto.randomBytes(12).toString('hex')}`;
         refundStatus = RefundStatus.SUCCEEDED;
       }
@@ -658,7 +726,7 @@ export class PaymentsService {
               gatewayRefundId = null;
               refundStatus = RefundStatus.FAILED;
             }
-          } else {
+          } else if (env.NODE_ENV === 'test') {
             gatewayRefundId = `rfnd_${crypto.randomBytes(12).toString('hex')}`;
             refundStatus = RefundStatus.SUCCEEDED;
           }

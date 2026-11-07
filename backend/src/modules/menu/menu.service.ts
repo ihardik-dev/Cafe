@@ -63,7 +63,9 @@ export class MenuService {
     return categories.map((cat) => ({
       ...cat,
       items: cat.items.map((item) => {
-        const inStock = !item.isPerishable || (item.inventory ? item.inventory.stockQuantity > 0 : true);
+        // Issue #16: Perishable items with NO inventory record are treated as out of stock.
+        // A perishable item that has never had inventory set up cannot be safely sold.
+        const inStock = !item.isPerishable || (item.inventory !== null && item.inventory.stockQuantity > 0);
         const { inventory, ...publicFields } = item;
         return {
           ...publicFields,
@@ -81,7 +83,10 @@ export class MenuService {
         category: true,
         modifierGroups: {
           include: {
-            options: true,
+            // Issue #17: Filter to only available modifier options — consistent with getFullMenu()
+            options: {
+              where: { isAvailable: true },
+            },
           },
         },
       },
@@ -94,7 +99,8 @@ export class MenuService {
       throw err;
     }
 
-    const inStock = !item.isPerishable || (item.inventory ? item.inventory.stockQuantity > 0 : true);
+    // Issue #16: Perishable items with NO inventory record are out of stock.
+    const inStock = !item.isPerishable || (item.inventory !== null && item.inventory.stockQuantity > 0);
     const { inventory, ...publicFields } = item;
     return {
       ...publicFields,

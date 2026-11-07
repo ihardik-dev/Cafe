@@ -215,6 +215,10 @@ function createInMemoryReservationPrisma() {
         releaseLock();
       }
     },
+    $queryRaw: async (query: any, ...values: any[]) => {
+      // Mock SELECT ... FOR UPDATE returning locked table row
+      return [{ id: 'mock-table-lock' }];
+    },
     $disconnect: async () => {},
   };
 

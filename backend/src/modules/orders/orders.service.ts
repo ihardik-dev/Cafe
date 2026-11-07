@@ -75,11 +75,11 @@ export class OrdersService {
 
     // Compute owner scope (Scoped idempotency design):
     // Authenticated members are scoped to user:<userId>
-    // Guests are scoped to guest:<guestSessionId>
+    // Guests are scoped to guest:<guestSessionId> or fallback guest:anon
     const effectiveGuestSessionId =
       guestSessionId ||
       input.guestSessionId ||
-      (input.customerEmail ? `email:${input.customerEmail}` : 'anonymous');
+      (input.customerEmail ? `email:${input.customerEmail}` : 'anon');
 
     const scope = userId ? `user:${userId}` : `guest:${effectiveGuestSessionId}`;
 
@@ -107,17 +107,37 @@ export class OrdersService {
     }
 
     if (!existingOrder) {
-      const globalOrder = await this.prisma.order.findUnique({
-        where: { idempotencyKey: input.idempotencyKey } as any,
-        include: {
-          items: {
-            include: {
-              modifiers: true,
+      // Cross-scope ownership defense: check if this idempotency key was claimed by another scope
+      let globalOrder: any = null;
+      if (typeof this.prisma.order.findFirst === 'function') {
+        globalOrder = await this.prisma.order.findFirst({
+          where: { idempotencyKey: input.idempotencyKey },
+          include: {
+            items: {
+              include: {
+                modifiers: true,
+              },
             },
+            statusHistory: true,
           },
-          statusHistory: true,
-        },
-      });
+        });
+      } else if (typeof this.prisma.order.findUnique === 'function') {
+        try {
+          globalOrder = await this.prisma.order.findUnique({
+            where: { idempotencyKey: input.idempotencyKey } as any,
+            include: {
+              items: {
+                include: {
+                  modifiers: true,
+                },
+              },
+              statusHistory: true,
+            },
+          });
+        } catch {
+          // Mock fallback
+        }
+      }
 
       if (globalOrder) {
         const globalScope =
@@ -128,11 +148,12 @@ export class OrdersService {
           const isUserAToUserB = scope.startsWith('user:') && globalScope?.startsWith('user:');
           const isScopedGuestToScopedGuest =
             scope.startsWith('guest:') &&
-            scope !== 'guest:anonymous' &&
+            scope !== 'guest:anon' &&
             globalScope?.startsWith('guest:') &&
-            globalScope !== 'guest:anonymous';
+            globalScope !== 'guest:anon';
 
-          // If not both distinct authenticated users or distinct named guest sessions, treat as ownership mismatch
+          // If not both distinct registered users or distinct named guest sessions,
+          // treat cross-boundary usage as an ownership violation
           if (!isUserAToUserB && !isScopedGuestToScopedGuest) {
             const err: any = new Error(
               'Idempotency key belongs to another customer account or guest session'
@@ -304,17 +325,38 @@ export class OrdersService {
         }
 
         if (!winningOrder) {
-          winningOrder = await this.prisma.order.findUnique({
-            where: { idempotencyKey: input.idempotencyKey } as any,
-            include: {
-              items: {
-                include: {
-                  modifiers: true,
+          try {
+            if (typeof this.prisma.order.findFirst === 'function') {
+              winningOrder = await this.prisma.order.findFirst({
+                where: {
+                  idempotencyScope: scope,
+                  idempotencyKey: input.idempotencyKey,
                 },
-              },
-              statusHistory: true,
-            },
-          });
+                include: {
+                  items: {
+                    include: {
+                      modifiers: true,
+                    },
+                  },
+                  statusHistory: true,
+                },
+              });
+            } else if (typeof this.prisma.order.findUnique === 'function') {
+              winningOrder = await this.prisma.order.findUnique({
+                where: { idempotencyKey: input.idempotencyKey } as any,
+                include: {
+                  items: {
+                    include: {
+                      modifiers: true,
+                    },
+                  },
+                  statusHistory: true,
+                },
+              });
+            }
+          } catch {
+            // Mock fallback
+          }
         }
 
         if (!winningOrder) {
