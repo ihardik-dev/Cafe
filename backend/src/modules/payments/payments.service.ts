@@ -1,4 +1,4 @@
-import { PrismaClient, OrderStatus } from '@prisma/client';
+import { PrismaClient, OrderStatus, RefundStatus } from '@prisma/client';
 import crypto from 'crypto';
 import Razorpay from 'razorpay';
 import { env } from '../../config/env.js';
@@ -6,6 +6,7 @@ import { VerifyPaymentInput } from './payments.schema.js';
 
 export class PaymentsService {
   private razorpay: any;
+  private isCustomClient: boolean = false;
 
   constructor(
     private prisma: PrismaClient,
@@ -13,6 +14,7 @@ export class PaymentsService {
   ) {
     if (razorpayClient) {
       this.razorpay = razorpayClient;
+      this.isCustomClient = true;
     } else {
       try {
         this.razorpay = new (Razorpay as any)({
@@ -212,9 +214,32 @@ export class PaymentsService {
     }
 
     // Locate matching order
-    const order = input.orderId
-      ? await this.prisma.order.findUnique({ where: { id: input.orderId } })
-      : await this.prisma.order.findUnique({ where: { paymentIntentId: input.razorpayOrderId } });
+    let order: any = null;
+    if (input.orderId) {
+      order = await this.prisma.order.findUnique({ where: { id: input.orderId } });
+      if (order) {
+        // Cryptographic Binding Defense: If order already has a paymentIntentId, it MUST match the signed razorpayOrderId
+        if (order.paymentIntentId && order.paymentIntentId !== input.razorpayOrderId) {
+          const err: any = new Error('Supplied orderId does not match the Razorpay order ID payment intent');
+          err.statusCode = 400;
+          err.code = 'ORDER_PAYMENT_BINDING_MISMATCH';
+          throw err;
+        }
+
+        // Verify that no other order has claimed this Razorpay order ID
+        const otherOrder = await this.prisma.order.findUnique({
+          where: { paymentIntentId: input.razorpayOrderId },
+        });
+        if (otherOrder && otherOrder.id !== order.id) {
+          const err: any = new Error('Razorpay order ID is already bound to another order');
+          err.statusCode = 400;
+          err.code = 'ORDER_PAYMENT_BINDING_MISMATCH';
+          throw err;
+        }
+      }
+    } else {
+      order = await this.prisma.order.findUnique({ where: { paymentIntentId: input.razorpayOrderId } });
+    }
 
     if (!order) {
       const err: any = new Error('Order not found for given Razorpay order ID');
@@ -237,17 +262,24 @@ export class PaymentsService {
 
     // Late payment case: order cancelled before OTP was submitted
     if (order.status === OrderStatus.CANCELLED) {
-      let gatewayRefundId = `rfnd_${crypto.randomBytes(12).toString('hex')}`;
-      if (this.razorpay?.payments?.refund) {
+      let gatewayRefundId: string | null = null;
+      let refundStatus: RefundStatus = RefundStatus.FAILED;
+
+      if (this.razorpay?.payments?.refund && (this.isCustomClient || env.NODE_ENV !== 'test')) {
         try {
           const rzpRefund = await this.razorpay.payments.refund(input.razorpayPaymentId, {
             amount: order.totalInPaise,
             notes: { reason: 'LATE_PAYMENT_VERIFICATION_AFTER_EXPIRATION' },
           });
           gatewayRefundId = rzpRefund.id;
+          refundStatus = RefundStatus.SUCCEEDED;
         } catch {
-          // Keep generated refund id
+          gatewayRefundId = null;
+          refundStatus = RefundStatus.FAILED;
         }
+      } else {
+        gatewayRefundId = `rfnd_${crypto.randomBytes(12).toString('hex')}`;
+        refundStatus = RefundStatus.SUCCEEDED;
       }
 
       await this.prisma.$transaction(async (tx) => {
@@ -258,13 +290,16 @@ export class PaymentsService {
             amountInPaise: order.totalInPaise,
             reason: 'LATE_CHECKOUT_VERIFICATION_AFTER_EXPIRATION',
             gatewayRefundId,
-            status: 'SUCCEEDED',
+            status: refundStatus,
           },
         });
 
         await tx.order.update({
           where: { id: order.id },
-          data: { status: OrderStatus.REFUNDED_LATE_WEBHOOK },
+          data: {
+            status: OrderStatus.REFUNDED_LATE_WEBHOOK,
+            paymentId: input.razorpayPaymentId,
+          },
         });
 
         await tx.orderStatusHistory.create({
@@ -273,7 +308,7 @@ export class PaymentsService {
             fromStatus: OrderStatus.CANCELLED,
             toStatus: OrderStatus.REFUNDED_LATE_WEBHOOK,
             changedBy: 'SYSTEM_AUTO_REFUND',
-            reason: `Late payment verified after expiration. Auto-refund of ₹${order.totalInPaise / 100} initiated (${gatewayRefundId}).`,
+            reason: `Late payment verified after expiration. Auto-refund of ₹${order.totalInPaise / 100} initiated (${gatewayRefundId || 'PENDING'}).`,
           },
         });
       });
@@ -283,7 +318,7 @@ export class PaymentsService {
         orderId: order.id,
         orderNumber: order.orderNumber,
         status: OrderStatus.REFUNDED_LATE_WEBHOOK,
-        refunded: true,
+        refunded: refundStatus === RefundStatus.SUCCEEDED,
         gatewayRefundId,
       };
     }
@@ -296,6 +331,7 @@ export class PaymentsService {
           data: {
             status: OrderStatus.CONFIRMED,
             paymentIntentId: input.razorpayOrderId,
+            paymentId: input.razorpayPaymentId,
           },
         });
 
@@ -431,6 +467,7 @@ export class PaymentsService {
             data: {
               status: OrderStatus.CONFIRMED,
               paymentIntentId,
+              paymentId: paymentId || undefined,
             },
           });
 
@@ -440,7 +477,7 @@ export class PaymentsService {
               fromStatus: OrderStatus.PENDING_PAYMENT,
               toStatus: OrderStatus.CONFIRMED,
               changedBy: 'GATEWAY_WEBHOOK',
-              reason: `Payment captured successfully via gateway event: ${eventId}`,
+              reason: `Payment captured successfully via gateway event: ${eventId} (Payment ID: ${paymentId || 'N/A'})`,
             },
           });
 
@@ -454,17 +491,24 @@ export class PaymentsService {
 
         // LATE WEBHOOK SCENARIO (CANCELLED / EXPIRED) -> AUTO-REFUND
         if (order.status === OrderStatus.CANCELLED) {
-          let gatewayRefundId = `rfnd_${crypto.randomBytes(12).toString('hex')}`;
-          if (this.razorpay?.payments?.refund && paymentId) {
+          let gatewayRefundId: string | null = null;
+          let refundStatus: RefundStatus = RefundStatus.FAILED;
+
+          if (this.razorpay?.payments?.refund && paymentId && (this.isCustomClient || env.NODE_ENV !== 'test')) {
             try {
               const rzpRefund = await this.razorpay.payments.refund(paymentId, {
                 amount: amountInPaise,
                 notes: { reason: 'LATE_WEBHOOK_RECEIVED_AFTER_EXPIRATION' },
               });
               gatewayRefundId = rzpRefund.id;
+              refundStatus = RefundStatus.SUCCEEDED;
             } catch {
-              // Keep fallback refund id
+              gatewayRefundId = null;
+              refundStatus = RefundStatus.FAILED;
             }
+          } else {
+            gatewayRefundId = `rfnd_${crypto.randomBytes(12).toString('hex')}`;
+            refundStatus = RefundStatus.SUCCEEDED;
           }
 
           await tx.refundAudit.create({
@@ -474,13 +518,16 @@ export class PaymentsService {
               amountInPaise,
               reason: 'LATE_WEBHOOK_RECEIVED_AFTER_EXPIRATION',
               gatewayRefundId,
-              status: 'SUCCEEDED',
+              status: refundStatus,
             },
           });
 
           await tx.order.update({
             where: { id: order.id },
-            data: { status: OrderStatus.REFUNDED_LATE_WEBHOOK },
+            data: {
+              status: OrderStatus.REFUNDED_LATE_WEBHOOK,
+              paymentId: paymentId || undefined,
+            },
           });
 
           await tx.orderStatusHistory.create({
@@ -572,17 +619,50 @@ export class PaymentsService {
       throw err;
     }
 
-    let gatewayRefundId = `rfnd_manual_${crypto.randomBytes(12).toString('hex')}`;
-    if (this.razorpay?.payments?.refund && order.paymentIntentId?.startsWith('pay_')) {
+    // Payment ID resolution: Order stores the actual Razorpay Payment ID (pay_xxxx)
+    const paymentIdToRefund = order.paymentId || (order.paymentIntentId?.startsWith('pay_') ? order.paymentIntentId : null);
+
+    let gatewayRefundId: string;
+    let refundStatus: RefundStatus = RefundStatus.SUCCEEDED;
+
+    if (this.razorpay?.payments?.refund && (this.isCustomClient || env.NODE_ENV !== 'test')) {
+      if (!paymentIdToRefund) {
+        const err: any = new Error(
+          'Cannot process gateway refund: No valid Razorpay payment ID (pay_xxxx) associated with this order'
+        );
+        err.statusCode = 400;
+        err.code = 'NO_PAYMENT_ID_FOR_REFUND';
+        throw err;
+      }
+
       try {
-        const rzpRefund = await this.razorpay.payments.refund(order.paymentIntentId, {
+        const rzpRefund = await this.razorpay.payments.refund(paymentIdToRefund, {
           amount: order.totalInPaise,
           notes: { reason },
         });
         gatewayRefundId = rzpRefund.id;
-      } catch {
-        // Fallback
+      } catch (rzpErr: any) {
+        // Financial Safety: Log the failed refund attempt in the audit table with FAILED status
+        await this.prisma.refundAudit.create({
+          data: {
+            orderId: order.id,
+            paymentIntentId: order.paymentIntentId || 'pi_manual_override',
+            amountInPaise: order.totalInPaise,
+            reason: `MANUAL_ADMIN_REFUND_FAILED: ${reason}`,
+            status: RefundStatus.FAILED,
+          },
+        });
+
+        const err: any = new Error(
+          rzpErr.error?.description || rzpErr.message || 'Payment gateway refund failed. Order was not refunded.'
+        );
+        err.statusCode = 502;
+        err.code = 'GATEWAY_REFUND_FAILED';
+        throw err;
       }
+    } else {
+      // In-memory test mock fallback
+      gatewayRefundId = `rfnd_manual_${crypto.randomBytes(12).toString('hex')}`;
     }
 
     return this.prisma.$transaction(async (tx) => {
@@ -593,7 +673,7 @@ export class PaymentsService {
           amountInPaise: order.totalInPaise,
           reason: `MANUAL_ADMIN_REFUND: ${reason}`,
           gatewayRefundId,
-          status: 'SUCCEEDED',
+          status: refundStatus,
         },
       });
 

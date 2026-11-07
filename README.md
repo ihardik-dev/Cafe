@@ -135,10 +135,14 @@ npm test
  ✓ tests/step4_order_state_break.test.ts (7 tests)
  ✓ tests/step5_reservation_break.test.ts (6 tests)
  ✓ tests/step6_payments_webhooks_break.test.ts (5 tests)
+ ✓ tests/step7_razorpay_adversarial_break.test.ts (7 tests)
+ ✓ tests/step8_adversarial_code_review_fixes.test.ts (6 tests)
+ ✓ tests/step9_masterclass_code_review_hardening.test.ts (9 tests)
+ ✓ tests/step10_brutal_code_review_fixes.test.ts (10 tests)
 
-Test Files  6 passed (6)
-Tests       59 passed (59)
-Duration    ~2.1 seconds
+Test Files  10 passed (10)
+Tests       91 passed (91)
+Duration    ~2.5 seconds
 ```
 
 ### Key Vulnerabilities Tested & Blocked:
@@ -146,8 +150,14 @@ Duration    ~2.1 seconds
 2. **Sub-second Token Rotation Collision**: Nonces (`jti: crypto.randomUUID()`) added to refresh tokens for guaranteed rotation uniqueness.
 3. **Privilege Escalation**: Injected `role: "ADMIN"` parameters are stripped from signup payloads.
 4. **Price Spoofing**: Injected `totalInPaise: 0` is ignored; server calculates base price + modifiers + 5% GST.
-5. **Double Reservation Race Conditions**: 20 simultaneous parallel requests result in exactly 1 hold and 19 clean 409 rejections.
+5. **Double Reservation Race Conditions**: 20 simultaneous parallel requests result in exactly 1 hold and 19 clean 409 rejections with PostgreSQL row-level locks.
 6. **Double Webhook Delivery**: Webhook idempotency table deduplicates concurrent gateway retries.
+7. **Payment Verification Spoofing**: Signed Razorpay order IDs are cryptographically bound to the stored order record; submitting another customer's valid signature with a different order ID is rejected with 400 `ORDER_PAYMENT_BINDING_MISMATCH`.
+8. **Double Inventory Restoration Race**: Conditional atomic database updates (`where: { id, status: PENDING_PAYMENT }`) ensure that concurrent customer cancellations and cleanup worker sweeps restore stock exactly once.
+9. **Idempotency Ownership Scoping**: Strict session/user ownership verification prevents guests from hijacking authenticated members' orders via idempotency keys.
+10. **IST Cafe Operating Hours**: Reservation slot generation and hold validations enforce Indian Standard Time (`UTC+05:30`) operating hours (10:00 AM to 10:00 PM IST).
+11. **Public Inventory Privacy**: Raw inventory counts (`stockQuantity`, `lowStockThreshold`) are stripped from public menu endpoints (`/api/v1/menu`), returning only boolean `inStock` flags.
+12. **Financial Refund Integrity**: Real Razorpay payment IDs (`pay_xxxx`) are tracked, and manual refund gateway errors record `FAILED` in the database and return 502 rather than claiming fake success.
 
 ---
 

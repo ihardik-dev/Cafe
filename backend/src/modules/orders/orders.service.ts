@@ -87,10 +87,12 @@ export class OrdersService {
     });
 
     if (existingOrder) {
-      // Ownership check: Prevent customer A from accessing customer B's order via idempotency key
-      if (existingOrder.userId && userId && existingOrder.userId !== userId) {
+      // Ownership check: Prevent customer A or guest from accessing customer B's order via idempotency key
+      const existingOwner = existingOrder.userId || null;
+      const currentRequester = userId || null;
+      if (existingOwner !== currentRequester) {
         const err: any = new Error(
-          'Idempotency key belongs to another customer account'
+          'Idempotency key belongs to another customer account or guest session'
         );
         err.statusCode = 403;
         err.code = 'IDEMPOTENCY_OWNERSHIP_MISMATCH';
@@ -332,8 +334,25 @@ export class OrdersService {
       }
     }
 
-    // C. Atomic Status Transition + Inventory Restoration if Cancelled
+    // C. Atomic Conditional Status Transition + Inventory Restoration if Cancelled
     const updatedOrder = await this.prisma.$transaction(async (tx) => {
+      // Guard against concurrent transitions / double inventory restoration race condition
+      if (tx.order.updateMany) {
+        const updateResult = await tx.order.updateMany({
+          where: { id: order.id, status: currentStatus },
+          data: { status: nextStatus },
+        });
+
+        if (updateResult.count !== 1) {
+          const err: any = new Error(
+            `Order status was concurrently modified by another process. Expected status ${currentStatus}.`
+          );
+          err.statusCode = 409;
+          err.code = 'CONCURRENT_STATUS_MODIFICATION';
+          throw err;
+        }
+      }
+
       // If cancelled, restore reserved stock for perishable items
       if (nextStatus === OrderStatus.CANCELLED) {
         await this.menuService.restoreInventoryAtomic(

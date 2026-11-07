@@ -39,7 +39,7 @@ export class MenuService {
   }
 
   async getFullMenu() {
-    return this.prisma.category.findMany({
+    const categories = await this.prisma.category.findMany({
       where: { isActive: true },
       orderBy: { displayOrder: 'asc' },
       include: {
@@ -58,6 +58,19 @@ export class MenuService {
         },
       },
     });
+
+    // Public Menu Protection: Strip raw stockQuantity and lowStockThreshold to prevent inventory leaks
+    return categories.map((cat) => ({
+      ...cat,
+      items: cat.items.map((item) => {
+        const inStock = !item.isPerishable || (item.inventory ? item.inventory.stockQuantity > 0 : true);
+        const { inventory, ...publicFields } = item;
+        return {
+          ...publicFields,
+          inStock,
+        };
+      }),
+    }));
   }
 
   async getItemDetails(itemId: string) {
@@ -81,7 +94,12 @@ export class MenuService {
       throw err;
     }
 
-    return item;
+    const inStock = !item.isPerishable || (item.inventory ? item.inventory.stockQuantity > 0 : true);
+    const { inventory, ...publicFields } = item;
+    return {
+      ...publicFields,
+      inStock,
+    };
   }
 
   // ----------------------------------------------------
@@ -115,29 +133,31 @@ export class MenuService {
       throw err;
     }
 
-    const item = await this.prisma.menuItem.create({
-      data: {
-        categoryId: data.categoryId,
-        name: data.name,
-        description: data.description,
-        priceInPaise: data.priceInPaise,
-        imageUrl: data.imageUrl,
-        isAvailable: data.isAvailable,
-        isPerishable: data.isPerishable,
-      },
-    });
-
-    // If marked perishable, initialize inventory record
-    if (data.isPerishable) {
-      await this.prisma.inventoryItem.create({
+    return this.prisma.$transaction(async (tx) => {
+      const item = await tx.menuItem.create({
         data: {
-          menuItemId: item.id,
-          stockQuantity: 0,
+          categoryId: data.categoryId,
+          name: data.name,
+          description: data.description,
+          priceInPaise: data.priceInPaise,
+          imageUrl: data.imageUrl,
+          isAvailable: data.isAvailable,
+          isPerishable: data.isPerishable,
         },
       });
-    }
 
-    return item;
+      // If marked perishable, initialize inventory record atomically
+      if (data.isPerishable) {
+        await tx.inventoryItem.create({
+          data: {
+            menuItemId: item.id,
+            stockQuantity: 0,
+          },
+        });
+      }
+
+      return item;
+    });
   }
 
   async createModifierGroup(data: CreateModifierGroupInput) {

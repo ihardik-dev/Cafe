@@ -124,11 +124,11 @@ export const reservationsRoutes: FastifyPluginAsync = async (fastify) => {
     controller.getMyReservations.bind(controller)
   );
 
-  // PATCH /:id/cancel (Customer, Staff, or Admin)
+  // PATCH /:id/cancel (Customer, Staff, Admin, or Unauthenticated Guest with x-guest-access-token)
   fastify.patch(
     '/:id/cancel',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.optionalAuthenticate],
       schema: {
         tags: ['Reservations'],
         summary: 'Cancel a reservation booking',

@@ -424,7 +424,7 @@ describe('STEP 9 MASTERCLASS ADVERSARIAL BREAK TESTS: The 8 Advanced Engineering
       // 1. Hold table for 2 guests
       const holdRes = await reservationsService.holdSlot({
         tableId: tableTwoSeaterId,
-        startTime: '2026-11-15T18:00:00.000Z',
+        startTime: '2026-11-15T12:30:00.000Z', // 18:00 IST (6:00 PM IST)
         durationMinutes: 60,
         customerName: 'Sneaky Guest',
         customerEmail: 'sneaky@example.com',

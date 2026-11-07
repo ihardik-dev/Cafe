@@ -134,7 +134,8 @@ model Order {
   idempotencyKey           String?              @unique // Prevents double checkout submissions
   idempotencyPayloadHash   String?              // SHA-256 fingerprint of cart items & amount
   guestAccessTokenHash     String?              // SHA-256 hash of secret guest token (prevents IDOR access)
-  paymentIntentId          String?              @unique
+  paymentIntentId          String?              @unique // Gateway Order ID (e.g. order_xxxx)
+  paymentId                String?              @unique // Gateway Payment ID (e.g. pay_xxxx)
   paymentMethod    String?              // e.g. "UPI", "CARD", "NETBANKING", "CASH"
   customerNote     String?
   customerEmail    String?
@@ -278,16 +279,22 @@ model InboundWebhookEvent {
   @@index([eventId])
 }
 
+enum RefundStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
 model RefundAudit {
-  id              String   @id @default(uuid())
+  id              String       @id @default(uuid())
   orderId         String
-  order           Order    @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  order           Order        @relation(fields: [orderId], references: [id], onDelete: Restrict)
   paymentIntentId String
-  amountInPaise   Int      // Amount in paise
-  reason          String   // e.g. "LATE_WEBHOOK_RECEIVED_AFTER_EXPIRATION"
+  amountInPaise   Int          // Amount in paise
+  reason          String       // e.g. "LATE_WEBHOOK_RECEIVED_AFTER_EXPIRATION"
   gatewayRefundId String?
-  status          String   @default("SUCCEEDED")
-  createdAt       DateTime @default(now())
+  status          RefundStatus @default(PENDING)
+  createdAt       DateTime     @default(now())
 
   @@index([orderId])
 }

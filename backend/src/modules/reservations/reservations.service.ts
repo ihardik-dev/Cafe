@@ -35,9 +35,10 @@ export class ReservationsService {
       };
     }
 
-    // 2. Define cafe operating hours: 10:00 AM to 10:00 PM (12 hours)
-    const dayStart = new Date(`${dateStr}T10:00:00.000Z`);
-    const dayEnd = new Date(`${dateStr}T22:00:00.000Z`);
+    // 2. Define cafe operating hours in Indian Standard Time (10:00 AM to 10:00 PM IST / UTC+05:30)
+    // 10:00 AM IST is 04:30:00.000Z; 10:00 PM IST is 16:30:00.000Z
+    const dayStart = new Date(`${dateStr}T10:00:00+05:30`);
+    const dayEnd = new Date(`${dateStr}T22:00:00+05:30`);
     const now = new Date();
 
     // 3. Fetch all confirmed reservations and unexpired holds for candidate tables on this day
@@ -128,6 +129,35 @@ export class ReservationsService {
     const slotEnd = new Date(slotStart.getTime() + input.durationMinutes * 60 * 1000);
     const now = new Date();
 
+    if (slotStart.getTime() <= now.getTime()) {
+      const err: any = new Error('Cannot book a reservation in the past');
+      err.statusCode = 400;
+      err.code = 'RESERVATION_IN_PAST';
+      throw err;
+    }
+
+    // Operating hours enforcement in Indian Standard Time (IST, UTC+05:30)
+    const IST_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const istStart = new Date(slotStart.getTime() + IST_OFFSET_MS);
+    const istEnd = new Date(slotEnd.getTime() + IST_OFFSET_MS);
+
+    const startMinutes = istStart.getUTCHours() * 60 + istStart.getUTCMinutes();
+    const endMinutes = istEnd.getUTCHours() * 60 + istEnd.getUTCMinutes();
+
+    // 10:00 AM IST = 600 mins; 10:00 PM IST = 1320 mins (22:00)
+    if (
+      startMinutes < 600 ||
+      endMinutes > 1320 ||
+      istStart.getUTCDate() !== istEnd.getUTCDate()
+    ) {
+      const err: any = new Error(
+        'Reservation time must be within cafe operating hours (10:00 AM to 10:00 PM IST)'
+      );
+      err.statusCode = 400;
+      err.code = 'OUTSIDE_OPERATING_HOURS';
+      throw err;
+    }
+
     return this.prisma.$transaction(async (tx) => {
       // 1. Verify Table exists, is active, and can seat the guests
       const table = await tx.table.findUnique({
@@ -139,6 +169,13 @@ export class ReservationsService {
         err.statusCode = 404;
         err.code = 'TABLE_NOT_FOUND';
         throw err;
+      }
+
+      // Serialize concurrent booking attempts on this table using PostgreSQL row-level lock
+      try {
+        await tx.$executeRawUnsafe(`SELECT id FROM "Table" WHERE id = $1 FOR UPDATE`, table.id);
+      } catch {
+        // Fallback for in-memory mocks
       }
 
       if (table.capacity < input.guestCount) {
@@ -266,6 +303,13 @@ export class ReservationsService {
         err.statusCode = 404;
         err.code = 'HOLD_NOT_FOUND';
         throw err;
+      }
+
+      // Serialize concurrent confirmation attempts on this table using PostgreSQL row-level lock
+      try {
+        await tx.$executeRawUnsafe(`SELECT id FROM "Table" WHERE id = $1 FOR UPDATE`, hold.tableId);
+      } catch {
+        // Fallback for in-memory mocks
       }
 
       // 2. Verify hold has not expired

@@ -254,9 +254,9 @@ describe('STEP 5 ADVERSARIAL BREAK TESTS: Zero Double-Booking Reservation Engine
   describe('Adversarial Concurrency: 20 Parallel Requests Competing for 1 Slot', () => {
     it('MUST GUARANTEE zero double-booking under extreme concurrency (exactly 1 succeeds, 19 fail with 409)', async () => {
       const concurrentRequests = 20;
-      // Tomorrow at 19:00:00 UTC
+      // Tomorrow at 19:00 IST (7:00 PM IST = 13:30 UTC, strictly within 10:00 to 22:00 IST)
       const tomorrow1900 = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      tomorrow1900.setUTCHours(19, 0, 0, 0);
+      tomorrow1900.setUTCHours(13, 30, 0, 0);
       const startTimeIso = tomorrow1900.toISOString();
 
       // 20 users firing parallel hold requests at the exact same millisecond
@@ -298,7 +298,7 @@ describe('STEP 5 ADVERSARIAL BREAK TESTS: Zero Double-Booking Reservation Engine
   describe('Adversarial Overlapping Time Intervals Conflict Detection', () => {
     it('MUST BLOCK overlapping time intervals on the same table (partial overlap defense)', async () => {
       const baseTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      baseTime.setUTCHours(18, 0, 0, 0); // 18:00
+      baseTime.setUTCHours(12, 30, 0, 0); // 18:00 IST (6:00 PM IST)
 
       // 1. User A holds 18:00 to 19:30 (90 mins duration)
       const holdA = await reservationsService.holdSlot({
@@ -364,7 +364,7 @@ describe('STEP 5 ADVERSARIAL BREAK TESTS: Zero Double-Booking Reservation Engine
   describe('Adversarial Expired Hold Reclamation & Double Confirmation', () => {
     it('MUST REJECT confirmation of an expired hold with 410 HOLD_EXPIRED and allow slot reclamation', async () => {
       const tomorrowTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      tomorrowTime.setUTCHours(14, 0, 0, 0);
+      tomorrowTime.setUTCHours(8, 30, 0, 0); // 14:00 IST (2:00 PM IST)
 
       // 1. Create a hold
       const hold = await reservationsService.holdSlot({
@@ -417,7 +417,7 @@ describe('STEP 5 ADVERSARIAL BREAK TESTS: Zero Double-Booking Reservation Engine
 
     it('MUST PREVENT double confirmation replay attack with the same holdToken', async () => {
       const tomorrowTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      tomorrowTime.setUTCHours(16, 0, 0, 0);
+      tomorrowTime.setUTCHours(10, 30, 0, 0); // 16:00 IST (4:00 PM IST)
 
       const hold = await reservationsService.holdSlot({
         tableId: table2Id,
@@ -462,7 +462,7 @@ describe('STEP 5 ADVERSARIAL BREAK TESTS: Zero Double-Booking Reservation Engine
   describe('Adversarial Capacity & Horizontal Access Control', () => {
     it('MUST REJECT booking when guest count exceeds table capacity', async () => {
       const tomorrowTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      tomorrowTime.setUTCHours(12, 0, 0, 0);
+      tomorrowTime.setUTCHours(6, 30, 0, 0); // 12:00 IST (12:00 PM IST)
 
       // Table 1 has capacity 2, user requests 6 guests
       await expect(
@@ -483,7 +483,7 @@ describe('STEP 5 ADVERSARIAL BREAK TESTS: Zero Double-Booking Reservation Engine
 
     it('MUST BLOCK Customer B from cancelling Customer A’s reservation with 403 Forbidden', async () => {
       const tomorrowTime = new Date(Date.now() + 24 * 60 * 60 * 1000);
-      tomorrowTime.setUTCHours(15, 0, 0, 0);
+      tomorrowTime.setUTCHours(9, 30, 0, 0); // 15:00 IST (3:00 PM IST)
 
       // Customer A books Table 1
       const hold = await reservationsService.holdSlot({

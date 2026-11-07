@@ -33,10 +33,19 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     global: false,
   });
 
-  // CORS configuration for frontend dev
-  const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
+  // CORS configuration: Strict origins in production, never allow wildcard '*' with credentials: true
+  const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim()).filter((o) => o.length > 0 && o !== '*');
   await app.register(cors, {
-    origin: env.NODE_ENV === 'development' ? true : (allowedOrigins.includes('*') ? true : allowedOrigins),
+    origin: (origin, cb) => {
+      // In development / test, or non-browser server-to-server requests without Origin header
+      if (!origin || env.NODE_ENV !== 'production') {
+        return cb(null, true);
+      }
+      if (allowedOrigins.includes(origin)) {
+        return cb(null, true);
+      }
+      return cb(new Error('CORS origin denied'), false);
+    },
     credentials: true,
   });
 

@@ -4,6 +4,13 @@ import bcrypt from 'bcryptjs';
 const prisma = new PrismaClient();
 
 async function main() {
+  // Production Safeguard: Never allow destructive deletion of database in production
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DESTRUCTIVE_SEED !== 'true') {
+    console.error('❌ FATAL: Destructive seeding is blocked in production environment to prevent irreversible data loss.');
+    console.error('If you deliberately wish to execute a destructive reset, set ALLOW_DESTRUCTIVE_SEED=true.');
+    process.exit(1);
+  }
+
   console.log('🌱 Starting Cafe Database Seeding (Indian Rupee / Paise Pricing)...');
 
   // 1. Clean existing records (in reverse dependency order)
