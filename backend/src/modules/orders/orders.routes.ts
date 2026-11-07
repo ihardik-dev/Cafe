@@ -69,6 +69,15 @@ export const ordersRoutes: FastifyPluginAsync = async (fastify) => {
       schema: {
         tags: ['Orders'],
         summary: 'Get order details, items, pricing breakdown, and status history',
+        headers: {
+          type: 'object',
+          properties: {
+            'x-guest-access-token': {
+              type: 'string',
+              description: 'Guest Access Token (required for unauthenticated orders)',
+            },
+          },
+        },
         params: {
           type: 'object',
           required: ['orderId'],
@@ -87,6 +96,15 @@ export const ordersRoutes: FastifyPluginAsync = async (fastify) => {
       schema: {
         tags: ['Orders'],
         summary: 'Transition order state (guarded by state machine & RBAC)',
+        headers: {
+          type: 'object',
+          properties: {
+            'x-guest-access-token': {
+              type: 'string',
+              description: 'Guest Access Token (required for guest order cancellation)',
+            },
+          },
+        },
         security: [{ bearerAuth: [] }],
         params: {
           type: 'object',

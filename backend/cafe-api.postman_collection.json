@@ -30,6 +30,11 @@
       "key": "sampleHoldToken",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "guestAccessToken",
+      "value": "",
+      "type": "string"
     }
   ],
   "item": [
@@ -350,6 +355,43 @@
               "raw": "{{baseUrl}}/api/v1/payments/create-intent",
               "host": ["{{baseUrl}}"],
               "path": ["api", "v1", "payments", "create-intent"]
+            }
+          }
+        },
+        {
+          "name": "Verify Razorpay Payment (Client Callback)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"orderId\": \"{{sampleOrderId}}\",\n  \"razorpayOrderId\": \"order_TxIjVmYp2nIRef\",\n  \"razorpayPaymentId\": \"pay_sample_12345\",\n  \"razorpaySignature\": \"generated_hmac_sha256_signature\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payments/verify",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "payments", "verify"]
+            }
+          }
+        },
+        {
+          "name": "Simulate Payment Webhook",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "x-razorpay-signature", "value": "calculated_hmac_sha256" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"eventId\": \"evt_sample_12345\",\n  \"eventType\": \"payment.captured\",\n  \"data\": {\n    \"orderId\": \"{{sampleOrderId}}\",\n    \"paymentIntentId\": \"order_sample_intent\",\n    \"amountInPaise\": 25000,\n    \"currency\": \"INR\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/payments/webhook",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "payments", "webhook"]
             }
           }
         },

@@ -15,6 +15,15 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
       schema: {
         tags: ['Payments'],
         summary: 'Initiate Razorpay payment order for checkout',
+        headers: {
+          type: 'object',
+          properties: {
+            'x-guest-access-token': {
+              type: 'string',
+              description: 'Guest Access Token (required for guest orders)',
+            },
+          },
+        },
         body: {
           type: 'object',
           required: ['orderId'],

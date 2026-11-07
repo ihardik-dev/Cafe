@@ -13,6 +13,8 @@ import { menuRoutes } from './modules/menu/menu.routes.js';
 import { ordersRoutes } from './modules/orders/orders.routes.js';
 import { reservationsRoutes } from './modules/reservations/reservations.routes.js';
 import { paymentsRoutes } from './modules/payments/payments.routes.js';
+import { MenuService } from './modules/menu/menu.service.js';
+import { CleanupWorker } from './jobs/cleanup.worker.js';
 
 export interface BuildAppOptions {
   prismaClient?: PrismaClient;
@@ -30,7 +32,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // CORS configuration for frontend dev
   const allowedOrigins = env.CORS_ORIGIN.split(',').map((o) => o.trim());
   await app.register(cors, {
-    origin: allowedOrigins.includes('*') ? true : allowedOrigins,
+    origin: env.NODE_ENV === 'development' ? true : (allowedOrigins.includes('*') ? true : allowedOrigins),
     credentials: true,
   });
 
@@ -117,6 +119,27 @@ async function start() {
     await app.listen({ port: env.PORT, host: env.HOST });
     console.log(`🚀 Cafe Backend running at http://${env.HOST}:${env.PORT}`);
     console.log(`📚 Interactive OpenAPI Docs at http://${env.HOST}:${env.PORT}/docs`);
+
+    // Automatic background worker: Sweeps expired orders & table holds every 60 seconds
+    const menuService = new MenuService(app.prisma);
+    const cleanupWorker = new CleanupWorker(app.prisma, menuService);
+    const cleanupInterval = setInterval(async () => {
+      try {
+        const orderResult = await cleanupWorker.sweepExpiredOrders();
+        const holdResult = await cleanupWorker.sweepExpiredHolds();
+        if (orderResult.cancelledCount > 0 || holdResult.releasedCount > 0) {
+          console.log(
+            `🧹 [Cleanup Worker] Cancelled ${orderResult.cancelledCount} expired orders, released ${holdResult.releasedCount} table holds`
+          );
+        }
+      } catch (err) {
+        console.error('❌ [Cleanup Worker] Error during sweep:', err);
+      }
+    }, 60 * 1000);
+
+    app.addHook('onClose', async () => {
+      clearInterval(cleanupInterval);
+    });
   } catch (err) {
     app.log.error(err);
     process.exit(1);
