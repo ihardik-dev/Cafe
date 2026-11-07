@@ -426,7 +426,7 @@ describe('STEP 8 ADVERSARIAL BREAK TESTS: Razorpay Test Mode & Cryptographic Int
     });
 
     it('MUST ACCEPT valid signature and transition order to CONFIRMED', async () => {
-      const { order } = await ordersService.checkout({
+      const { order, guestAccessToken } = await ordersService.checkout({
         idempotencyKey: 'rzp-legit-verify-test',
         items: [{ menuItemId: espressoId, quantity: 1 }],
       });
@@ -444,6 +444,7 @@ describe('STEP 8 ADVERSARIAL BREAK TESTS: Razorpay Test Mode & Cryptographic Int
           razorpayOrderId: rzpOrderId,
           razorpayPaymentId: rzpPaymentId,
           razorpaySignature: validSig,
+          guestAccessToken,
         },
       });
 
@@ -464,7 +465,7 @@ describe('STEP 8 ADVERSARIAL BREAK TESTS: Razorpay Test Mode & Cryptographic Int
   // ----------------------------------------------------
   describe('High-Concurrency Duplicate Verify Defense (Idempotency)', () => {
     it('MUST handle 5 concurrent verify requests idempotently without state corruption', async () => {
-      const { order } = await ordersService.checkout({
+      const { order, guestAccessToken } = await ordersService.checkout({
         idempotencyKey: 'rzp-concurrent-verify',
         items: [{ menuItemId: espressoId, quantity: 2 }],
       });
@@ -484,6 +485,7 @@ describe('STEP 8 ADVERSARIAL BREAK TESTS: Razorpay Test Mode & Cryptographic Int
             razorpayOrderId: rzpOrderId,
             razorpayPaymentId: rzpPaymentId,
             razorpaySignature: validSig,
+            guestAccessToken,
           },
         })
       );
@@ -507,7 +509,7 @@ describe('STEP 8 ADVERSARIAL BREAK TESTS: Razorpay Test Mode & Cryptographic Int
   // ----------------------------------------------------
   describe('Late Checkout Verification Auto-Refund Engine', () => {
     it('MUST AUTOMATICALLY trigger refund and set REFUNDED_LATE_WEBHOOK if order was cancelled before OTP', async () => {
-      const { order } = await ordersService.checkout({
+      const { order, guestAccessToken } = await ordersService.checkout({
         idempotencyKey: 'rzp-late-checkout-test',
         items: [{ menuItemId: espressoId, quantity: 1 }],
       });
@@ -531,6 +533,7 @@ describe('STEP 8 ADVERSARIAL BREAK TESTS: Razorpay Test Mode & Cryptographic Int
           razorpayOrderId: rzpOrderId,
           razorpayPaymentId: rzpPaymentId,
           razorpaySignature: validSig,
+          guestAccessToken,
         },
       });
 

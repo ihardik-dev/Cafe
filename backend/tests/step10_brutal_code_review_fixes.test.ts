@@ -528,6 +528,7 @@ describe('STEP 10 ADVERSARIAL BREAK TESTS: The 7 Fresh Code Review Fixes', () =>
           razorpayOrderId: rzpA.razorpayOrderId,
           razorpayPaymentId: validPaymentIdA,
           razorpaySignature: validSigA,
+          guestAccessToken: guestTokenA,
         },
       });
 

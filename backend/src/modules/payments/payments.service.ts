@@ -89,6 +89,28 @@ export class PaymentsService {
     return crypto.timingSafeEqual(expectedBuffer, actualBuffer);
   }
 
+  /**
+   * Verify a guest access token without ever comparing secrets directly.
+   * Guest payment verification must fail closed when either side is missing.
+   */
+  private verifyGuestAccessToken(
+    storedHash: string | null | undefined,
+    providedToken?: string
+  ): boolean {
+    if (!storedHash || !providedToken) {
+      return false;
+    }
+
+    const computedHash = crypto.createHash('sha256').update(providedToken).digest('hex');
+    const expectedBuffer = Buffer.from(storedHash, 'utf8');
+    const actualBuffer = Buffer.from(computedHash, 'utf8');
+
+    return (
+      expectedBuffer.length === actualBuffer.length &&
+      crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+    );
+  }
+
   // ----------------------------------------------------
   // PAYMENT INTENT CREATION (RAZORPAY TEST MODE)
   // ----------------------------------------------------
@@ -285,26 +307,24 @@ export class PaymentsService {
       }
     }
 
-    // Access control verification: Prevent strangers from verifying someone else's order
-    if (order.userId && requestingUserId && order.userId !== requestingUserId) {
-      const err: any = new Error('Cannot verify payment for another customer order');
-      err.statusCode = 403;
-      err.code = 'FORBIDDEN_ORDER_ACCESS';
-      throw err;
-    }
-    if (!order.userId && order.guestAccessTokenHash && guestToken) {
-      const computedHash = crypto.createHash('sha256').update(guestToken).digest('hex');
-      const expectedBuffer = Buffer.from(order.guestAccessTokenHash, 'utf8');
-      const actualBuffer = Buffer.from(computedHash, 'utf8');
-      if (
-        expectedBuffer.length !== actualBuffer.length ||
-        !crypto.timingSafeEqual(expectedBuffer, actualBuffer)
-      ) {
-        const err: any = new Error('Invalid guest access token');
+    // Access control verification: payment confirmation is a state-changing
+    // operation, so it must fail closed for both member and guest orders.
+    if (order.userId) {
+      // Missing authentication is not a guest fallback. A member order can
+      // only be verified by that exact member.
+      if (!requestingUserId || order.userId !== requestingUserId) {
+        const err: any = new Error('Cannot verify payment for another customer order');
         err.statusCode = 403;
         err.code = 'FORBIDDEN_ORDER_ACCESS';
         throw err;
       }
+    } else if (!this.verifyGuestAccessToken(order.guestAccessTokenHash, guestToken)) {
+      // A guest order without a stored token is invalid/legacy data and must
+      // not become an unauthenticated payment-confirmation path.
+      const err: any = new Error('Guest orders require a valid guest access token to verify payment');
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN_ORDER_ACCESS';
+      throw err;
     }
 
     // Gateway Payment Verification (fail-closed): Order association, captured status, Amount, Currency.

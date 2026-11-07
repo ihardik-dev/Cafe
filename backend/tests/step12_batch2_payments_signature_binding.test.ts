@@ -413,6 +413,7 @@ describe('STEP 12: BATCH 2 CODE REVIEW VERIFICATION — Payment Gateway, Signatu
           razorpayOrderId: intent.razorpayOrderId,
           razorpayPaymentId: paymentId,
           razorpaySignature: sig,
+            guestAccessToken,
         },
       });
 
@@ -452,6 +453,7 @@ describe('STEP 12: BATCH 2 CODE REVIEW VERIFICATION — Payment Gateway, Signatu
           razorpayOrderId: intent.razorpayOrderId,
           razorpayPaymentId: paymentId,
           razorpaySignature: sig,
+          guestAccessToken,
         },
       });
 
@@ -494,6 +496,7 @@ describe('STEP 12: BATCH 2 CODE REVIEW VERIFICATION — Payment Gateway, Signatu
             razorpayOrderId: intent.razorpayOrderId,
             razorpayPaymentId: paymentId,
             razorpaySignature: sig,
+            guestAccessToken,
           },
         })
       );
@@ -563,6 +566,7 @@ describe('STEP 12: BATCH 2 CODE REVIEW VERIFICATION — Payment Gateway, Signatu
             razorpayOrderId: intent.razorpayOrderId,
             razorpayPaymentId: paymentId,
             razorpaySignature: sig,
+          guestAccessToken,
           },
         }),
       ]);
@@ -645,6 +649,54 @@ describe('STEP 12: BATCH 2 CODE REVIEW VERIFICATION — Payment Gateway, Signatu
 
       expect(res.statusCode).toBe(403);
       expect(res.json().code).toBe('FORBIDDEN_ORDER_ACCESS');
+    });
+
+    it('MUST REJECT payment verification without the owning member authentication', async () => {
+      const member = await mockPrisma.user.create({
+        data: { email: 'verify.owner@cafe.com', role: Role.CUSTOMER },
+      });
+      const { order } = await ordersService.checkout(
+        {
+          idempotencyKey: 'verify-member-order-key',
+          items: [{ menuItemId: burgerItem.id, quantity: 1 }],
+        },
+        member.id
+      );
+      const intent = await paymentsService.createPaymentIntent(order.id, member.id);
+      const paymentId = 'pay_member_auth_required';
+
+      await expect(
+        paymentsService.verifyPayment({
+          orderId: order.id,
+          razorpayOrderId: intent.razorpayOrderId,
+          razorpayPaymentId: paymentId,
+          razorpaySignature: generateSignature(intent.razorpayOrderId, paymentId),
+        })
+      ).rejects.toMatchObject({ statusCode: 403, code: 'FORBIDDEN_ORDER_ACCESS' });
+
+      const unchanged = await mockPrisma.order.findUnique({ where: { id: order.id } });
+      expect(unchanged.status).toBe(OrderStatus.PENDING_PAYMENT);
+    });
+
+    it('MUST REJECT guest payment verification when the access token is omitted', async () => {
+      const { order, guestAccessToken } = await ordersService.checkout({
+        idempotencyKey: 'verify-guest-token-required',
+        items: [{ menuItemId: burgerItem.id, quantity: 1 }],
+      });
+      const intent = await paymentsService.createPaymentIntent(order.id, undefined, guestAccessToken);
+      const paymentId = 'pay_guest_token_required';
+
+      await expect(
+        paymentsService.verifyPayment({
+          orderId: order.id,
+          razorpayOrderId: intent.razorpayOrderId,
+          razorpayPaymentId: paymentId,
+          razorpaySignature: generateSignature(intent.razorpayOrderId, paymentId),
+        })
+      ).rejects.toMatchObject({ statusCode: 403, code: 'FORBIDDEN_ORDER_ACCESS' });
+
+      const unchanged = await mockPrisma.order.findUnique({ where: { id: order.id } });
+      expect(unchanged.status).toBe(OrderStatus.PENDING_PAYMENT);
     });
   });
 });
