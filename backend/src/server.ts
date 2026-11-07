@@ -4,12 +4,19 @@ import helmet from '@fastify/helmet';
 import sensible from '@fastify/sensible';
 import swagger from '@fastify/swagger';
 import swaggerUi from '@fastify/swagger-ui';
+import { PrismaClient } from '@prisma/client';
 import { env } from './config/env.js';
+import prismaPlugin from './plugins/prisma.js';
+import authPlugin from './plugins/auth.js';
+import { authRoutes } from './modules/auth/auth.routes.js';
 
-export async function buildApp(): Promise<FastifyInstance> {
+export interface BuildAppOptions {
+  prismaClient?: PrismaClient;
+}
+
+export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
     logger: env.NODE_ENV !== 'test',
-    disableRequestLogging: env.NODE_ENV === 'test',
   });
 
   // Security headers & sensible utilities
@@ -23,12 +30,16 @@ export async function buildApp(): Promise<FastifyInstance> {
     credentials: true,
   });
 
+  // Core Plugins: Prisma DB & JWT Auth
+  await app.register(prismaPlugin, { client: options.prismaClient });
+  await app.register(authPlugin);
+
   // Swagger OpenAPI Documentation
   await app.register(swagger, {
     openapi: {
       info: {
-        title: 'Artisan Cafe Backend API',
-        description: 'Production API for Cafe Ordering, Customizations, Concurrency-Safe Reservations, and Payments',
+        title: 'Artisan Cafe Backend API (India)',
+        description: 'Production API for Cafe Ordering, Customizations, Concurrency-Safe Reservations, and INR Payments',
         version: '1.0.0',
       },
       servers: [
@@ -56,6 +67,9 @@ export async function buildApp(): Promise<FastifyInstance> {
       deepLinking: true,
     },
   });
+
+  // Route Modules
+  await app.register(authRoutes, { prefix: '/api/v1/auth' });
 
   // Health check endpoint
   app.get('/health', async () => {
