@@ -461,6 +461,43 @@ describe('STEP 6 ADVERSARIAL BREAK TESTS: Payments, Late Webhooks & Background C
   });
 
   describe('Adversarial Late Webhook Scenario: Automatic Refund on Expired Order', () => {
+    it('MUST NOT confirm an expired pending order when the cleanup sweep has not run', async () => {
+      const { order } = await ordersService.checkout({
+        idempotencyKey: 'expired-pending-webhook-rejected',
+        items: [{ menuItemId: croissantId, quantity: 1 }],
+      });
+      await mockPrisma.order.update({
+        where: { id: order.id },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+
+      const payload = JSON.stringify({
+        eventId: 'evt_expired_pending_rejected',
+        eventType: 'payment.captured',
+        data: {
+          orderId: order.id,
+          paymentIntentId: 'pi_expired_pending_rejected',
+          amountInPaise: order.totalInPaise,
+          currency: 'INR',
+        },
+      });
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payments/webhook',
+        headers: {
+          'x-webhook-signature': generateSignature(payload),
+          'content-type': 'application/json',
+        },
+        payload,
+      });
+
+      expect(response.statusCode).toBe(410);
+      expect(response.json().code).toBe('ORDER_EXPIRED');
+      expect((await mockPrisma.order.findUnique({ where: { id: order.id } })).status).toBe(
+        OrderStatus.PENDING_PAYMENT
+      );
+    });
+
     it('MUST AUTOMATICALLY issue a refund when payment webhook arrives late for an expired/cancelled order', async () => {
       // 1. Customer initiates order for 2 Croissants (stock drops from 5 to 3)
       const { order } = await ordersService.checkout({

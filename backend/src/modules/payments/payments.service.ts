@@ -327,6 +327,19 @@ export class PaymentsService {
       throw err;
     }
 
+    // The payment window is part of the order's authorization boundary, not
+    // merely a hint for the cleanup worker. Never confirm an order after its
+    // deadline, even if the worker has not swept it yet.
+    if (
+      order.status === OrderStatus.PENDING_PAYMENT &&
+      new Date(order.expiresAt).getTime() <= Date.now()
+    ) {
+      const err: any = new Error('Order payment window has expired. Please place a new order.');
+      err.statusCode = 410;
+      err.code = 'ORDER_EXPIRED';
+      throw err;
+    }
+
     // Gateway Payment Verification (fail-closed): Order association, captured status, Amount, Currency.
     // If the gateway client is a custom test-injected client, it may implement fetch selectively.
     // For the real Razorpay client, payments.fetch MUST be available; if not, reject verification.
@@ -647,6 +660,20 @@ export class PaymentsService {
           action: 'ORDER_NOT_FOUND',
           message: `Order ${orderId || paymentIntentId} does not exist in database`,
         };
+      }
+
+      // Do not acknowledge an expired pending order as successfully paid.
+      // Throwing rolls back InboundWebhookEvent, allowing the gateway to retry
+      // after the cleanup worker moves the order to CANCELLED, where the
+      // existing late-webhook refund path applies.
+      if (
+        order.status === OrderStatus.PENDING_PAYMENT &&
+        new Date(order.expiresAt).getTime() <= Date.now()
+      ) {
+        const err: any = new Error('Order payment window has expired.');
+        err.statusCode = 410;
+        err.code = 'ORDER_EXPIRED';
+        throw err;
       }
 
       // Cryptographic Binding Defense for Webhooks

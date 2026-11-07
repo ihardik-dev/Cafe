@@ -284,9 +284,18 @@ describe('STEP 9 ADVERSARIAL BREAK TESTS: The 4 Critical Code Review Fixes', () 
     mockPrisma = createMockPrisma();
     menuService = new MenuService(mockPrisma);
     ordersService = new OrdersService(mockPrisma, menuService);
-    paymentsService = new PaymentsService(mockPrisma);
+    const testRazorpay = {
+      orders: {
+        create: async (options: any) => ({
+          id: `order_test_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          amount: options.amount,
+          currency: options.currency,
+        }),
+      },
+    };
+    paymentsService = new PaymentsService(mockPrisma, testRazorpay);
 
-    app = await buildApp({ prismaClient: mockPrisma });
+    app = await buildApp({ prismaClient: mockPrisma, razorpayClient: testRazorpay });
     await app.ready();
 
     // Setup: 5 Artisan Burgers in inventory
@@ -548,7 +557,7 @@ describe('STEP 9 ADVERSARIAL BREAK TESTS: The 4 Critical Code Review Fixes', () 
       const intent = resWithToken.json().paymentIntent;
       expect(intent.currency).toBe('INR');
       expect(intent.amountInPaise).toBe(order.totalInPaise);
-      expect(intent.keyId).toBeDefined();
+      expect(intent.keyId === null || typeof intent.keyId === 'string').toBe(true);
     });
   });
 });

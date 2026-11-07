@@ -698,5 +698,37 @@ describe('STEP 12: BATCH 2 CODE REVIEW VERIFICATION — Payment Gateway, Signatu
       const unchanged = await mockPrisma.order.findUnique({ where: { id: order.id } });
       expect(unchanged.status).toBe(OrderStatus.PENDING_PAYMENT);
     });
+
+    it('MUST NOT confirm an expired pending order before the cleanup sweep runs', async () => {
+      const { order, guestAccessToken } = await ordersService.checkout({
+        idempotencyKey: 'verify-expired-order-rejected',
+        items: [{ menuItemId: burgerItem.id, quantity: 1 }],
+      });
+      const intent = await paymentsService.createPaymentIntent(order.id, undefined, guestAccessToken);
+      await mockPrisma.order.update({
+        where: { id: order.id },
+        data: { expiresAt: new Date(Date.now() - 1000) },
+      });
+
+      const paymentId = 'pay_expired_order_rejected';
+      const response = await app.inject({
+        method: 'POST',
+        url: '/api/v1/payments/verify',
+        headers: { 'content-type': 'application/json' },
+        payload: {
+          orderId: order.id,
+          razorpayOrderId: intent.razorpayOrderId,
+          razorpayPaymentId: paymentId,
+          razorpaySignature: generateSignature(intent.razorpayOrderId, paymentId),
+          guestAccessToken,
+        },
+      });
+
+      expect(response.statusCode).toBe(410);
+      expect(response.json().code).toBe('ORDER_EXPIRED');
+      expect((await mockPrisma.order.findUnique({ where: { id: order.id } })).status).toBe(
+        OrderStatus.PENDING_PAYMENT
+      );
+    });
   });
 });

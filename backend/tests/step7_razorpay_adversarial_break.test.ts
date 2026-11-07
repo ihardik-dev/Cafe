@@ -338,26 +338,33 @@ describe('STEP 8 ADVERSARIAL BREAK TESTS: Razorpay Test Mode & Cryptographic Int
   // 1. LIVE RAZORPAY TEST API CREDENTIAL VERIFICATION
   // ----------------------------------------------------
   describe('Live Razorpay Test Credential Authentication', () => {
-    it('MUST successfully authenticate against live Razorpay Test servers using provided keys', async () => {
-      const liveRazorpay = new (Razorpay as any)({
-        key_id: env.RAZORPAY_KEY_ID,
-        key_secret: env.RAZORPAY_KEY_SECRET,
-      });
+    it.skipIf(
+      process.env.RUN_LIVE_RAZORPAY_TESTS !== '1' ||
+        !env.RAZORPAY_KEY_ID ||
+        !env.RAZORPAY_KEY_SECRET
+    )(
+      'MUST successfully authenticate against live Razorpay Test servers using provided keys',
+      async () => {
+        const liveRazorpay = new (Razorpay as any)({
+          key_id: env.RAZORPAY_KEY_ID,
+          key_secret: env.RAZORPAY_KEY_SECRET,
+        });
 
-      // Attempt to create a 1-rupee test order on Razorpay
-      const rzpOrder = await liveRazorpay.orders.create({
-        amount: 100, // ₹1.00 = 100 paise
-        currency: 'INR',
-        receipt: `test_rcpt_${Date.now()}`,
-        notes: { testSuite: 'adversarial_break_test' },
-      });
+        // Attempt to create a 1-rupee test order on Razorpay
+        const rzpOrder = await liveRazorpay.orders.create({
+          amount: 100, // ₹1.00 = 100 paise
+          currency: 'INR',
+          receipt: `test_rcpt_${Date.now()}`,
+          notes: { testSuite: 'adversarial_break_test' },
+        });
 
-      expect(rzpOrder.id).toBeDefined();
-      expect(rzpOrder.id.startsWith('order_')).toBe(true);
-      expect(rzpOrder.status).toBe('created');
-      expect(rzpOrder.currency).toBe('INR');
-      expect(rzpOrder.amount).toBe(100);
-    });
+        expect(rzpOrder.id).toBeDefined();
+        expect(rzpOrder.id.startsWith('order_')).toBe(true);
+        expect(rzpOrder.status).toBe('created');
+        expect(rzpOrder.currency).toBe('INR');
+        expect(rzpOrder.amount).toBe(100);
+      }
+    );
   });
 
   // ----------------------------------------------------

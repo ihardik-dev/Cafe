@@ -427,11 +427,29 @@ describe('STEP 10 ADVERSARIAL BREAK TESTS: The 7 Fresh Code Review Fixes', () =>
     mockPrisma = createMockPrisma();
     menuService = new MenuService(mockPrisma);
     ordersService = new OrdersService(mockPrisma, menuService);
-    paymentsService = new PaymentsService(mockPrisma);
+    const testRazorpay = {
+      orders: {
+        create: async (options: any) => ({
+          id: `order_test_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+          amount: options.amount,
+          currency: options.currency,
+        }),
+      },
+      payments: {
+        fetch: async (paymentId: string) => ({
+          id: paymentId,
+          order_id: undefined,
+          amount: undefined,
+          currency: 'INR',
+          status: 'captured',
+        }),
+      },
+    };
+    paymentsService = new PaymentsService(mockPrisma, testRazorpay);
     reservationsService = new ReservationsService(mockPrisma);
     cleanupWorker = new CleanupWorker(mockPrisma, menuService);
 
-    app = await buildApp({ prismaClient: mockPrisma });
+    app = await buildApp({ prismaClient: mockPrisma, razorpayClient: testRazorpay });
     await app.ready();
 
     // Seed Category & Burger Item
