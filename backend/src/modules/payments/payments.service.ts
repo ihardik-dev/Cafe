@@ -438,6 +438,101 @@ export class PaymentsService {
 
     // Late payment case: order cancelled before OTP was submitted
     if (order.status === OrderStatus.CANCELLED) {
+      // Claim the refund before calling Razorpay. The unique idempotency key
+      // makes this safe across concurrent requests and across process
+      // instances; only the request that creates the PENDING audit may call
+      // the gateway.
+      const refundIdempotencyKey = `late-verify:${order.id}:${input.razorpayPaymentId}`;
+      let pendingAudit: any;
+      let existingAudit: any;
+
+      try {
+        const claimResult = await this.prisma.$transaction(async (tx: any) => {
+          const existing = await tx.refundAudit.findMany({
+            where: { orderId: order.id, idempotencyKey: refundIdempotencyKey },
+          });
+          if (existing.length > 0) {
+            if (existing[0].status === RefundStatus.FAILED) {
+              // A prior gateway attempt failed. Reclaim the same audit row
+              // for a retry, while allowing only one concurrent retry owner.
+              if (tx.refundAudit.updateMany) {
+                const reclaimed = await tx.refundAudit.updateMany({
+                  where: { id: existing[0].id, status: RefundStatus.FAILED },
+                  data: { status: RefundStatus.PENDING, gatewayRefundId: null },
+                });
+                if (reclaimed.count === 1) {
+                  existing[0].status = RefundStatus.PENDING;
+                  existing[0].gatewayRefundId = null;
+                  return { claimed: true, audit: existing[0] };
+                }
+              } else {
+                existing[0].status = RefundStatus.PENDING;
+                existing[0].gatewayRefundId = null;
+                return { claimed: true, audit: existing[0] };
+              }
+            }
+            return { claimed: false, audit: existing[0] };
+          }
+
+          const audit = await tx.refundAudit.create({
+            data: {
+              orderId: order.id,
+              paymentIntentId: input.razorpayOrderId,
+              amountInPaise: order.totalInPaise,
+              reason: 'LATE_CHECKOUT_VERIFICATION_AFTER_EXPIRATION',
+              idempotencyKey: refundIdempotencyKey,
+              status: RefundStatus.PENDING,
+            },
+          });
+          return { claimed: true, audit };
+        });
+
+        if (claimResult.claimed) {
+          pendingAudit = claimResult.audit;
+        } else {
+          existingAudit = claimResult.audit;
+        }
+      } catch (claimErr: any) {
+        // A concurrent request may win the unique-key race between the
+        // findMany and create. Re-read the winner and treat it idempotently.
+        if (claimErr?.code !== 'P2002') {
+          throw claimErr;
+        }
+        const existing = await this.prisma.refundAudit.findMany({
+          where: { orderId: order.id, idempotencyKey: refundIdempotencyKey },
+        });
+        existingAudit = existing[0];
+        if (!existingAudit) {
+          throw claimErr;
+        }
+      }
+
+      if (existingAudit) {
+        if (existingAudit.status === RefundStatus.SUCCEEDED) {
+          return {
+            verified: true,
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            status: OrderStatus.REFUNDED_LATE_WEBHOOK,
+            refunded: true,
+            gatewayRefundId: existingAudit.gatewayRefundId,
+            isDuplicate: true,
+          };
+        }
+
+        // PENDING means another request owns the gateway call. Never issue a
+        // second refund while that call is in flight.
+        return {
+          verified: true,
+          orderId: order.id,
+          orderNumber: order.orderNumber,
+          status: OrderStatus.CANCELLED,
+          refunded: false,
+          refundPending: true,
+          isDuplicate: true,
+        };
+      }
+
       let gatewayRefundId: string | null = null;
       let refundStatus: RefundStatus = RefundStatus.FAILED;
 
@@ -459,34 +554,37 @@ export class PaymentsService {
       }
 
       await this.prisma.$transaction(async (tx) => {
-        await tx.refundAudit.create({
-          data: {
-            orderId: order.id,
-            paymentIntentId: input.razorpayOrderId,
-            amountInPaise: order.totalInPaise,
-            reason: 'LATE_CHECKOUT_VERIFICATION_AFTER_EXPIRATION',
-            gatewayRefundId,
-            status: refundStatus,
-          },
-        });
+        if (tx.refundAudit.update) {
+          await tx.refundAudit.update({
+            where: { id: pendingAudit.id },
+            data: { gatewayRefundId, status: refundStatus },
+          });
+        } else {
+          // Lightweight test doubles may return the same audit object rather
+          // than implement Prisma's update delegate.
+          pendingAudit.gatewayRefundId = gatewayRefundId;
+          pendingAudit.status = refundStatus;
+        }
 
-        await tx.order.update({
-          where: { id: order.id },
-          data: {
-            status: OrderStatus.REFUNDED_LATE_WEBHOOK,
-            paymentId: input.razorpayPaymentId,
-          },
-        });
+        if (refundStatus === RefundStatus.SUCCEEDED) {
+          await tx.order.update({
+            where: { id: order.id },
+            data: {
+              status: OrderStatus.REFUNDED_LATE_WEBHOOK,
+              paymentId: input.razorpayPaymentId,
+            },
+          });
 
-        await tx.orderStatusHistory.create({
-          data: {
-            orderId: order.id,
-            fromStatus: OrderStatus.CANCELLED,
-            toStatus: OrderStatus.REFUNDED_LATE_WEBHOOK,
-            changedBy: 'SYSTEM_AUTO_REFUND',
-            reason: `Late payment verified after expiration. Auto-refund of ₹${order.totalInPaise / 100} initiated (${gatewayRefundId || 'PENDING'}).`,
-          },
-        });
+          await tx.orderStatusHistory.create({
+            data: {
+              orderId: order.id,
+              fromStatus: OrderStatus.CANCELLED,
+              toStatus: OrderStatus.REFUNDED_LATE_WEBHOOK,
+              changedBy: 'SYSTEM_AUTO_REFUND',
+              reason: `Late payment verified after expiration. Auto-refund of ₹${order.totalInPaise / 100} initiated (${gatewayRefundId || 'PENDING'}).`,
+            },
+          });
+        }
       });
 
       return {

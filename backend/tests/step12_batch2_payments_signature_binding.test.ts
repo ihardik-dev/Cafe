@@ -730,5 +730,49 @@ describe('STEP 12: BATCH 2 CODE REVIEW VERIFICATION — Payment Gateway, Signatu
         OrderStatus.PENDING_PAYMENT
       );
     });
+
+    it('MUST issue only one gateway refund for concurrent late verifications', async () => {
+      const { order, guestAccessToken } = await ordersService.checkout({
+        idempotencyKey: 'late-refund-concurrency-order',
+        items: [{ menuItemId: burgerItem.id, quantity: 1 }],
+      });
+      const intent = await paymentsService.createPaymentIntent(order.id, undefined, guestAccessToken);
+      await mockPrisma.order.update({
+        where: { id: order.id },
+        data: { status: OrderStatus.CANCELLED },
+      });
+
+      const paymentId = 'pay_late_refund_concurrency';
+      customMockRazorpay.payments.fetch = async () => ({
+        id: paymentId,
+        order_id: intent.razorpayOrderId,
+        amount: order.totalInPaise,
+        currency: 'INR',
+        status: 'captured',
+      });
+      let refundCalls = 0;
+      customMockRazorpay.payments.refund = async () => {
+        refundCalls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { id: 'rfnd_late_once' };
+      };
+
+      const input = {
+        orderId: order.id,
+        razorpayOrderId: intent.razorpayOrderId,
+        razorpayPaymentId: paymentId,
+        razorpaySignature: generateSignature(intent.razorpayOrderId, paymentId),
+      };
+      const [first, second] = await Promise.all([
+        paymentsService.verifyPayment(input, undefined, guestAccessToken),
+        paymentsService.verifyPayment(input, undefined, guestAccessToken),
+      ]);
+
+      expect(refundCalls).toBe(1);
+      expect([first.refunded, second.refunded].filter(Boolean)).toHaveLength(1);
+      expect((await mockPrisma.order.findUnique({ where: { id: order.id } })).status).toBe(
+        OrderStatus.REFUNDED_LATE_WEBHOOK
+      );
+    });
   });
 });
