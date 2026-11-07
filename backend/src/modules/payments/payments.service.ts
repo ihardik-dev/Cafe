@@ -119,7 +119,7 @@ export class PaymentsService {
     // Access control:
     // 1. Authenticated member order: MUST match requesting user ID
     if (order.userId) {
-      if (requestingUserId && order.userId !== requestingUserId) {
+      if (!requestingUserId || order.userId !== requestingUserId) {
         const err: any = new Error('Cannot initiate payment for another customer order');
         err.statusCode = 403;
         err.code = 'FORBIDDEN_ORDER_ACCESS';
@@ -199,7 +199,11 @@ export class PaymentsService {
   // CHECKOUT PAYMENT VERIFICATION (CLIENT CALLBACK)
   // ----------------------------------------------------
 
-  async verifyPayment(input: VerifyPaymentInput) {
+  async verifyPayment(
+    input: VerifyPaymentInput,
+    requestingUserId?: string,
+    guestToken?: string
+  ) {
     const isValid = this.verifyCheckoutSignature(
       input.razorpayOrderId,
       input.razorpayPaymentId,
@@ -213,39 +217,110 @@ export class PaymentsService {
       throw err;
     }
 
-    // Locate matching order
+    // Locate matching order with strict cryptographic binding
     let order: any = null;
     if (input.orderId) {
       order = await this.prisma.order.findUnique({ where: { id: input.orderId } });
-      if (order) {
-        // Cryptographic Binding Defense: If order already has a paymentIntentId, it MUST match the signed razorpayOrderId
-        if (order.paymentIntentId && order.paymentIntentId !== input.razorpayOrderId) {
-          const err: any = new Error('Supplied orderId does not match the Razorpay order ID payment intent');
-          err.statusCode = 400;
-          err.code = 'ORDER_PAYMENT_BINDING_MISMATCH';
-          throw err;
-        }
+      if (!order) {
+        const err: any = new Error('Order not found for given order ID');
+        err.statusCode = 404;
+        err.code = 'ORDER_NOT_FOUND';
+        throw err;
+      }
 
-        // Verify that no other order has claimed this Razorpay order ID
-        const otherOrder = await this.prisma.order.findUnique({
+      // Cryptographic Binding Defense: If order already has a paymentIntentId, it MUST match the signed razorpayOrderId
+      if (order.paymentIntentId && order.paymentIntentId !== input.razorpayOrderId) {
+        const err: any = new Error('Supplied orderId does not match the Razorpay order ID payment intent');
+        err.statusCode = 400;
+        err.code = 'ORDER_PAYMENT_BINDING_MISMATCH';
+        throw err;
+      }
+
+      // Verify that no other order has claimed this Razorpay order ID
+      let otherOrder: any = null;
+      try {
+        otherOrder = await this.prisma.order.findUnique({
           where: { paymentIntentId: input.razorpayOrderId },
         });
-        if (otherOrder && otherOrder.id !== order.id) {
-          const err: any = new Error('Razorpay order ID is already bound to another order');
-          err.statusCode = 400;
-          err.code = 'ORDER_PAYMENT_BINDING_MISMATCH';
-          throw err;
-        }
+      } catch {
+        // Fallback
+      }
+      if (otherOrder && otherOrder.id !== order.id) {
+        const err: any = new Error('Razorpay order ID is already bound to another order');
+        err.statusCode = 400;
+        err.code = 'ORDER_PAYMENT_BINDING_MISMATCH';
+        throw err;
       }
     } else {
       order = await this.prisma.order.findUnique({ where: { paymentIntentId: input.razorpayOrderId } });
+      if (!order) {
+        const err: any = new Error('Order not found for given Razorpay order ID');
+        err.statusCode = 404;
+        err.code = 'ORDER_NOT_FOUND';
+        throw err;
+      }
     }
 
-    if (!order) {
-      const err: any = new Error('Order not found for given Razorpay order ID');
-      err.statusCode = 404;
-      err.code = 'ORDER_NOT_FOUND';
+    // Access control verification: Prevent strangers from verifying someone else's order
+    if (order.userId && requestingUserId && order.userId !== requestingUserId) {
+      const err: any = new Error('Cannot verify payment for another customer order');
+      err.statusCode = 403;
+      err.code = 'FORBIDDEN_ORDER_ACCESS';
       throw err;
+    }
+    if (!order.userId && order.guestAccessTokenHash && guestToken) {
+      const computedHash = crypto.createHash('sha256').update(guestToken).digest('hex');
+      const expectedBuffer = Buffer.from(order.guestAccessTokenHash, 'utf8');
+      const actualBuffer = Buffer.from(computedHash, 'utf8');
+      if (
+        expectedBuffer.length !== actualBuffer.length ||
+        !crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+      ) {
+        const err: any = new Error('Invalid guest access token');
+        err.statusCode = 403;
+        err.code = 'FORBIDDEN_ORDER_ACCESS';
+        throw err;
+      }
+    }
+
+    // Gateway Payment Verification (Order association, Amount in Paise, Currency INR)
+    if (this.razorpay?.payments?.fetch) {
+      try {
+        const paymentDetails = await this.razorpay.payments.fetch(input.razorpayPaymentId);
+        if (paymentDetails) {
+          if (paymentDetails.order_id && paymentDetails.order_id !== input.razorpayOrderId) {
+            const err: any = new Error('Gateway payment order_id does not match Razorpay order ID');
+            err.statusCode = 400;
+            err.code = 'GATEWAY_ORDER_MISMATCH';
+            throw err;
+          }
+          if (paymentDetails.amount !== undefined && paymentDetails.amount !== order.totalInPaise) {
+            const err: any = new Error(
+              `Gateway payment amount (₹${paymentDetails.amount / 100}) does not match order total (₹${order.totalInPaise / 100})`
+            );
+            err.statusCode = 400;
+            err.code = 'PAYMENT_AMOUNT_MISMATCH';
+            throw err;
+          }
+          if (paymentDetails.currency && paymentDetails.currency !== 'INR') {
+            const err: any = new Error('Gateway payment currency must be INR');
+            err.statusCode = 400;
+            err.code = 'PAYMENT_CURRENCY_MISMATCH';
+            throw err;
+          }
+        }
+      } catch (rzpFetchErr: any) {
+        if (
+          rzpFetchErr.code === 'GATEWAY_ORDER_MISMATCH' ||
+          rzpFetchErr.code === 'PAYMENT_AMOUNT_MISMATCH' ||
+          rzpFetchErr.code === 'PAYMENT_CURRENCY_MISMATCH'
+        ) {
+          throw rzpFetchErr;
+        }
+        if (this.isCustomClient && rzpFetchErr.statusCode) {
+          throw rzpFetchErr;
+        }
+      }
     }
 
     // Idempotent: already confirmed
@@ -255,7 +330,7 @@ export class PaymentsService {
         orderId: order.id,
         orderNumber: order.orderNumber,
         status: order.status,
-        paymentId: input.razorpayPaymentId,
+        paymentId: order.paymentId || input.razorpayPaymentId,
         isDuplicate: true,
       };
     }
@@ -323,36 +398,68 @@ export class PaymentsService {
       };
     }
 
-    // Standard on-time payment confirmation
+    // Standard on-time payment confirmation with Atomic Concurrency Protection
     if (order.status === OrderStatus.PENDING_PAYMENT) {
-      await this.prisma.$transaction(async (tx) => {
-        await tx.order.update({
-          where: { id: order.id },
-          data: {
-            status: OrderStatus.CONFIRMED,
-            paymentIntentId: input.razorpayOrderId,
-            paymentId: input.razorpayPaymentId,
-          },
-        });
+      const result = await this.prisma.$transaction(async (tx: any) => {
+        let isWinner = true;
+        if (tx.order.updateMany) {
+          const updated = await tx.order.updateMany({
+            where: {
+              id: order.id,
+              status: OrderStatus.PENDING_PAYMENT,
+            },
+            data: {
+              status: OrderStatus.CONFIRMED,
+              paymentIntentId: input.razorpayOrderId,
+              paymentId: input.razorpayPaymentId,
+            },
+          });
+          isWinner = updated.count === 1;
+        } else {
+          await tx.order.update({
+            where: { id: order.id },
+            data: {
+              status: OrderStatus.CONFIRMED,
+              paymentIntentId: input.razorpayOrderId,
+              paymentId: input.razorpayPaymentId,
+            },
+          });
+        }
 
-        await tx.orderStatusHistory.create({
-          data: {
+        if (isWinner) {
+          await tx.orderStatusHistory.create({
+            data: {
+              orderId: order.id,
+              fromStatus: OrderStatus.PENDING_PAYMENT,
+              toStatus: OrderStatus.CONFIRMED,
+              changedBy: 'RAZORPAY_CHECKOUT_VERIFY',
+              reason: `Payment verified successfully (Payment ID: ${input.razorpayPaymentId})`,
+            },
+          });
+
+          return {
+            verified: true,
             orderId: order.id,
-            fromStatus: OrderStatus.PENDING_PAYMENT,
-            toStatus: OrderStatus.CONFIRMED,
-            changedBy: 'RAZORPAY_CHECKOUT_VERIFY',
-            reason: `Payment verified successfully (Payment ID: ${input.razorpayPaymentId})`,
-          },
-        });
+            orderNumber: order.orderNumber,
+            status: OrderStatus.CONFIRMED,
+            paymentId: input.razorpayPaymentId,
+            isDuplicate: false,
+          };
+        } else {
+          // Another concurrent request (or webhook) was the winner!
+          const current = await tx.order.findUnique({ where: { id: order.id } });
+          return {
+            verified: true,
+            orderId: order.id,
+            orderNumber: order.orderNumber,
+            status: current?.status || OrderStatus.CONFIRMED,
+            paymentId: current?.paymentId || input.razorpayPaymentId,
+            isDuplicate: true,
+          };
+        }
       });
 
-      return {
-        verified: true,
-        orderId: order.id,
-        orderNumber: order.orderNumber,
-        status: OrderStatus.CONFIRMED,
-        paymentId: input.razorpayPaymentId,
-      };
+      return result;
     }
 
     return {
@@ -454,35 +561,80 @@ export class PaymentsService {
         };
       }
 
+      // Cryptographic Binding Defense for Webhooks
+      if (orderId && order.paymentIntentId && order.paymentIntentId !== paymentIntentId) {
+        const err: any = new Error('Webhook orderId does not match stored payment intent');
+        err.statusCode = 400;
+        err.code = 'ORDER_PAYMENT_BINDING_MISMATCH';
+        throw err;
+      }
+
+      // Amount verification against order total in paise
+      if (amountInPaise !== undefined && amountInPaise !== order.totalInPaise) {
+        const err: any = new Error(
+          `Webhook payment amount (₹${amountInPaise / 100}) does not match order total (₹${order.totalInPaise / 100})`
+        );
+        err.statusCode = 400;
+        err.code = 'PAYMENT_AMOUNT_MISMATCH';
+        throw err;
+      }
+
+      // Currency verification
+      const webhookCurrency = parsedJson.payload?.payment?.entity?.currency || parsedJson.data?.currency;
+      if (webhookCurrency && webhookCurrency !== 'INR') {
+        const err: any = new Error('Webhook payment currency must be INR');
+        err.statusCode = 400;
+        err.code = 'PAYMENT_CURRENCY_MISMATCH';
+        throw err;
+      }
+
       // Handle successful payment events
       if (
         eventType === 'payment.captured' ||
         eventType === 'order.paid' ||
         eventType === 'payment_intent.succeeded'
       ) {
-        // Standard on-time payment
+        // Standard on-time payment with atomic concurrency protection
         if (order.status === OrderStatus.PENDING_PAYMENT) {
-          await tx.order.update({
-            where: { id: order.id },
-            data: {
-              status: OrderStatus.CONFIRMED,
-              paymentIntentId,
-              paymentId: paymentId || undefined,
-            },
-          });
+          let isWinner = true;
+          if (tx.order.updateMany) {
+            const updated = await tx.order.updateMany({
+              where: {
+                id: order.id,
+                status: OrderStatus.PENDING_PAYMENT,
+              },
+              data: {
+                status: OrderStatus.CONFIRMED,
+                paymentIntentId,
+                paymentId: paymentId || undefined,
+              },
+            });
+            isWinner = updated.count === 1;
+          } else {
+            await tx.order.update({
+              where: { id: order.id },
+              data: {
+                status: OrderStatus.CONFIRMED,
+                paymentIntentId,
+                paymentId: paymentId || undefined,
+              },
+            });
+          }
 
-          await tx.orderStatusHistory.create({
-            data: {
-              orderId: order.id,
-              fromStatus: OrderStatus.PENDING_PAYMENT,
-              toStatus: OrderStatus.CONFIRMED,
-              changedBy: 'GATEWAY_WEBHOOK',
-              reason: `Payment captured successfully via gateway event: ${eventId} (Payment ID: ${paymentId || 'N/A'})`,
-            },
-          });
+          if (isWinner) {
+            await tx.orderStatusHistory.create({
+              data: {
+                orderId: order.id,
+                fromStatus: OrderStatus.PENDING_PAYMENT,
+                toStatus: OrderStatus.CONFIRMED,
+                changedBy: 'GATEWAY_WEBHOOK',
+                reason: `Payment captured successfully via gateway event: ${eventId} (Payment ID: ${paymentId || 'N/A'})`,
+              },
+            });
+          }
 
           return {
-            isDuplicate: false,
+            isDuplicate: !isWinner,
             action: 'ORDER_CONFIRMED',
             orderId: order.id,
             status: OrderStatus.CONFIRMED,

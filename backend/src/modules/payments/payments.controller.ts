@@ -51,7 +51,15 @@ export class PaymentsController {
     }
 
     try {
-      const result = await this.paymentsService.verifyPayment(parseResult.data);
+      const userId = request.user?.id || (request.user as any)?.userId;
+      const guestToken =
+        (request.headers['x-guest-access-token'] as string) ||
+        parseResult.data.guestAccessToken;
+      const result = await this.paymentsService.verifyPayment(
+        parseResult.data,
+        userId,
+        guestToken
+      );
       return reply.status(200).send(result);
     } catch (err: any) {
       return reply.status(err.statusCode || 500).send({

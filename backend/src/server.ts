@@ -19,12 +19,15 @@ import { CleanupWorker } from './jobs/cleanup.worker.js';
 
 export interface BuildAppOptions {
   prismaClient?: PrismaClient;
+  razorpayClient?: any;
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
   const app = Fastify({
     logger: env.NODE_ENV !== 'test',
   });
+
+  app.decorate('razorpay', options.razorpayClient || null);
 
   // Security headers, sensible utilities, and rate limiting
   await app.register(helmet, { contentSecurityPolicy: false });

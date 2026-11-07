@@ -326,7 +326,8 @@ export class MenuService {
 
     // Server-side financial calculation (strictly integer paise)
     const modifiersTotalExtraInPaise = validatedModifiers.reduce((acc, m) => acc + m.extraPriceInPaise, 0);
-    const unitPriceInPaise = item.priceInPaise + modifiersTotalExtraInPaise;
+    const basePrice = item.priceInPaise ?? (item as any).basePriceInPaise ?? 0;
+    const unitPriceInPaise = basePrice + modifiersTotalExtraInPaise;
     const totalPriceInPaise = unitPriceInPaise * cartItem.quantity;
 
     return {

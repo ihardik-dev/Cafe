@@ -9,6 +9,7 @@ export const verifyPaymentSchema = z.object({
   razorpayOrderId: z.string().min(1, 'razorpayOrderId is required'),
   razorpayPaymentId: z.string().min(1, 'razorpayPaymentId is required'),
   razorpaySignature: z.string().min(1, 'razorpaySignature is required'),
+  guestAccessToken: z.string().optional(),
 });
 
 export const webhookPayloadSchema = z.object({

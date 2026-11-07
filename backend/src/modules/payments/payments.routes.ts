@@ -4,7 +4,7 @@ import { PaymentsService } from './payments.service.js';
 import { PaymentsController } from './payments.controller.js';
 
 export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
-  const paymentsService = new PaymentsService(fastify.prisma);
+  const paymentsService = new PaymentsService(fastify.prisma, (fastify as any).razorpay);
   const controller = new PaymentsController(paymentsService);
 
   // POST /create-intent (Razorpay Order creation)
@@ -40,6 +40,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.post(
     '/verify',
     {
+      preHandler: [fastify.optionalAuthenticate],
       schema: {
         tags: ['Payments'],
         summary: 'Verify Razorpay payment signature from client checkout modal',
@@ -51,6 +52,7 @@ export const paymentsRoutes: FastifyPluginAsync = async (fastify) => {
             razorpayOrderId: { type: 'string' },
             razorpayPaymentId: { type: 'string' },
             razorpaySignature: { type: 'string' },
+            guestAccessToken: { type: 'string' },
           },
         },
       },
