@@ -1,0 +1,288 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ----------------------------------------------------
+// USER & ACCESS CONTROL
+// ----------------------------------------------------
+
+enum Role {
+  CUSTOMER
+  STAFF
+  ADMIN
+}
+
+model User {
+  id           String        @id @default(uuid())
+  email        String        @unique
+  passwordHash String
+  name         String
+  role         Role          @default(CUSTOMER)
+  refreshToken String?
+  orders       Order[]
+  reservations Reservation[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([email])
+}
+
+// ----------------------------------------------------
+// MENU & INVENTORY
+// ----------------------------------------------------
+
+model Category {
+  id           String     @id @default(uuid())
+  name         String     @unique
+  description  String?
+  displayOrder Int        @default(0)
+  isActive     Boolean    @default(true)
+  items        MenuItem[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+}
+
+model MenuItem {
+  id             String          @id @default(uuid())
+  categoryId     String
+  category       Category        @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  name           String
+  description    String?
+  priceInCents   Int             // Stored as integer cents (e.g. $4.50 = 450)
+  imageUrl       String?
+  isAvailable    Boolean         @default(true)
+  isPerishable   Boolean         @default(false)
+  inventory      InventoryItem?
+  modifierGroups ModifierGroup[]
+  orderItems     OrderItem[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@index([categoryId])
+  @@index([isAvailable])
+}
+
+model ModifierGroup {
+  id           String           @id @default(uuid())
+  menuItemId   String
+  menuItem     MenuItem         @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  name         String           // e.g. "Milk Choice", "Extra Shots", "Size"
+  minSelection Int              @default(0)
+  maxSelection Int              @default(1)
+  options      ModifierOption[]
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  @@index([menuItemId])
+}
+
+model ModifierOption {
+  id                String              @id @default(uuid())
+  groupId           String
+  group             ModifierGroup       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name              String              // e.g. "Oat Milk", "Almond Milk", "Extra Shot"
+  extraPriceInCents Int                 @default(0) // Integer cents (e.g. $0.75 = 75)
+  isAvailable       Boolean             @default(true)
+  orderItemModifiers OrderItemModifier[]
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@index([groupId])
+}
+
+model InventoryItem {
+  id                String   @id @default(uuid())
+  menuItemId        String   @unique
+  menuItem          MenuItem @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+  stockQuantity     Int      @default(0)
+  lowStockThreshold Int      @default(5)
+  updatedAt         DateTime @updatedAt
+
+  @@index([stockQuantity])
+}
+
+// ----------------------------------------------------
+// ORDERS & FINANCIAL AUDIT
+// ----------------------------------------------------
+
+enum OrderStatus {
+  DRAFT
+  PENDING_PAYMENT
+  CONFIRMED
+  PREPARING
+  READY_FOR_PICKUP
+  COMPLETED
+  CANCELLED
+  REFUNDED_LATE_WEBHOOK
+  REFUNDED
+}
+
+model Order {
+  id               String               @id @default(uuid())
+  orderNumber      String               @unique // Human-readable e.g. CAFE-20261107-001
+  userId           String?
+  user             User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
+  status           OrderStatus          @default(PENDING_PAYMENT)
+  subtotalInCents  Int                  // Base items sum
+  taxInCents       Int                  // Tax calculated server-side
+  totalInCents     Int                  // Final bill
+  idempotencyKey   String?              @unique // Prevents double checkout submissions
+  paymentIntentId  String?              @unique
+  paymentMethod    String?              // e.g. "CARD", "CASH", "UPI"
+  customerNote     String?
+  customerEmail    String?
+  customerPhone    String?
+  expiresAt        DateTime             // Unpaid orders auto-cancel after 15 mins
+  items            OrderItem[]
+  statusHistory    OrderStatusHistory[]
+  refundAudits     RefundAudit[]
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+model OrderItem {
+  id                String              @id @default(uuid())
+  orderId           String
+  order             Order               @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  menuItemId        String
+  menuItem          MenuItem            @relation(fields: [menuItemId], references: [id])
+  quantity          Int
+  unitPriceInCents  Int                 // Snapshot of base price at checkout
+  totalPriceInCents Int                 // (unitPrice + modifiers) * quantity
+  modifiers         OrderItemModifier[]
+  createdAt         DateTime            @default(now())
+
+  @@index([orderId])
+}
+
+model OrderItemModifier {
+  id                String         @id @default(uuid())
+  orderItemId       String
+  orderItem         OrderItem      @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  modifierOptionId  String
+  modifierOption    ModifierOption @relation(fields: [modifierOptionId], references: [id])
+  name              String         // Snapshot name
+  extraPriceInCents Int            // Snapshot extra price
+  createdAt         DateTime       @default(now())
+
+  @@index([orderItemId])
+}
+
+model OrderStatusHistory {
+  id         String      @id @default(uuid())
+  orderId    String
+  order      Order       @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  fromStatus OrderStatus
+  toStatus   OrderStatus
+  changedBy  String?     // User ID or "SYSTEM"
+  reason     String?
+  createdAt  DateTime    @default(now())
+
+  @@index([orderId])
+}
+
+// ----------------------------------------------------
+// TABLE RESERVATIONS & CONCURRENCY DEFENSE
+// ----------------------------------------------------
+
+enum TableArea {
+  INDOOR
+  OUTDOOR
+  PATIO
+  BAR_COUNTER
+}
+
+enum ReservationStatus {
+  HELD
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  NO_SHOW
+}
+
+model Table {
+  id           String            @id @default(uuid())
+  tableNumber  Int               @unique
+  capacity     Int
+  area         TableArea         @default(INDOOR)
+  isActive     Boolean           @default(true)
+  reservations Reservation[]
+  holds        ReservationHold[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  @@index([capacity])
+}
+
+model Reservation {
+  id            String            @id @default(uuid())
+  tableId       String
+  table         Table             @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  userId        String?
+  user          User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
+  customerName  String
+  customerEmail String
+  customerPhone String
+  guestCount    Int
+  startTime     DateTime
+  endTime       DateTime
+  status        ReservationStatus @default(CONFIRMED)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([tableId, startTime, endTime])
+  @@index([status])
+}
+
+// Temporary 10-minute hold to guarantee zero double-bookings during checkout
+model ReservationHold {
+  id            String   @id @default(uuid())
+  tableId       String
+  table         Table    @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  slotStartTime DateTime
+  slotEndTime   DateTime
+  heldByToken   String   @unique
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  // Database-level uniqueness guarantees that two clients cannot hold the same table & start time simultaneously
+  @@unique([tableId, slotStartTime])
+  @@index([expiresAt])
+}
+
+// ----------------------------------------------------
+// PAYMENT WEBHOOK IDEMPOTENCY & REFUND AUDIT
+// ----------------------------------------------------
+
+model InboundWebhookEvent {
+  id          String   @id @default(uuid())
+  eventId     String   @unique // Gateway event ID (e.g. evt_123456789)
+  eventType   String   // e.g. "payment_intent.succeeded"
+  payloadJson String   // Raw JSON string
+  processedAt DateTime @default(now())
+
+  @@index([eventId])
+}
+
+model RefundAudit {
+  id              String   @id @default(uuid())
+  orderId         String
+  order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  paymentIntentId String
+  amountInCents   Int
+  reason          String   // e.g. "LATE_WEBHOOK_RECEIVED_AFTER_EXPIRATION"
+  gatewayRefundId String?
+  status          String   @default("SUCCEEDED")
+  createdAt       DateTime @default(now())
+
+  @@index([orderId])
+}
