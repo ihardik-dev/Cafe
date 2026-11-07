@@ -82,7 +82,11 @@ export class PaymentsService {
   // PAYMENT INTENT CREATION (RAZORPAY TEST MODE)
   // ----------------------------------------------------
 
-  async createPaymentIntent(orderId: string, requestingUserId?: string) {
+  async createPaymentIntent(
+    orderId: string,
+    requestingUserId?: string,
+    guestToken?: string
+  ) {
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
     });
@@ -91,14 +95,6 @@ export class PaymentsService {
       const err: any = new Error('Order not found');
       err.statusCode = 404;
       err.code = 'ORDER_NOT_FOUND';
-      throw err;
-    }
-
-    // Access control: Guest orders can be paid, but authenticated orders must match user
-    if (order.userId && requestingUserId && order.userId !== requestingUserId) {
-      const err: any = new Error('Cannot initiate payment for another customer order');
-      err.statusCode = 403;
-      err.code = 'FORBIDDEN_ORDER_ACCESS';
       throw err;
     }
 
@@ -116,6 +112,43 @@ export class PaymentsService {
       err.statusCode = 410;
       err.code = 'ORDER_EXPIRED';
       throw err;
+    }
+
+    // Access control:
+    // 1. Authenticated member order: MUST match requesting user ID
+    if (order.userId) {
+      if (requestingUserId && order.userId !== requestingUserId) {
+        const err: any = new Error('Cannot initiate payment for another customer order');
+        err.statusCode = 403;
+        err.code = 'FORBIDDEN_ORDER_ACCESS';
+        throw err;
+      }
+    } else {
+      // 2. Guest order: MUST supply valid guest access token
+      if (order.guestAccessTokenHash) {
+        if (!guestToken) {
+          const err: any = new Error(
+            'Guest orders require a valid guest access token to initiate payment'
+          );
+          err.statusCode = 403;
+          err.code = 'FORBIDDEN_ORDER_ACCESS';
+          throw err;
+        }
+
+        const computedHash = crypto.createHash('sha256').update(guestToken).digest('hex');
+        const expectedBuffer = Buffer.from(order.guestAccessTokenHash, 'utf8');
+        const actualBuffer = Buffer.from(computedHash, 'utf8');
+
+        if (
+          expectedBuffer.length !== actualBuffer.length ||
+          !crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+        ) {
+          const err: any = new Error('Invalid guest access token');
+          err.statusCode = 403;
+          err.code = 'FORBIDDEN_ORDER_ACCESS';
+          throw err;
+        }
+      }
     }
 
     let razorpayOrderId = order.paymentIntentId;

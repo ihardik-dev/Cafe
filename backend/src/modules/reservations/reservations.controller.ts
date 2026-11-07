@@ -118,9 +118,11 @@ export class ReservationsController {
         ? { id: request.user.id, role: request.user.role }
         : { role: Role.CUSTOMER };
 
+      const guestToken = request.headers['x-guest-access-token'] as string | undefined;
       const reservation = await this.reservationsService.cancelReservation(
         request.params.id,
-        actor
+        actor,
+        guestToken
       );
       return reply.status(200).send({ reservation });
     } catch (err: any) {

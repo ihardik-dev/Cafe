@@ -280,7 +280,16 @@ export class ReservationsService {
         throw err;
       }
 
-      // 3. Atomically create confirmed Reservation
+      // 3. Generate guest access token if guest booking
+      let rawGuestToken: string | undefined;
+      let guestAccessTokenHash: string | undefined;
+
+      if (!userId) {
+        rawGuestToken = `gst_${crypto.randomBytes(24).toString('hex')}`;
+        guestAccessTokenHash = crypto.createHash('sha256').update(rawGuestToken).digest('hex');
+      }
+
+      // 4. Atomically create confirmed Reservation
       const reservation = await tx.reservation.create({
         data: {
           tableId: hold.tableId,
@@ -289,6 +298,7 @@ export class ReservationsService {
           customerEmail: guestDetails.customerEmail,
           customerPhone: guestDetails.customerPhone,
           guestCount: guestDetails.guestCount,
+          guestAccessTokenHash: guestAccessTokenHash || null,
           startTime: hold.slotStartTime,
           endTime: hold.slotEndTime,
           status: ReservationStatus.CONFIRMED,
@@ -298,12 +308,15 @@ export class ReservationsService {
         },
       });
 
-      // 4. Atomically release/delete the hold record
+      // 5. Atomically release/delete the hold record
       await tx.reservationHold.delete({
         where: { id: hold.id },
       });
 
-      return reservation;
+      return {
+        ...reservation,
+        ...(rawGuestToken ? { guestAccessToken: rawGuestToken } : {}),
+      };
     });
   }
 
@@ -311,7 +324,11 @@ export class ReservationsService {
   // CANCEL RESERVATION
   // ----------------------------------------------------
 
-  async cancelReservation(reservationId: string, actor: { id?: string; role: Role }) {
+  async cancelReservation(
+    reservationId: string,
+    actor: { id?: string; role: Role },
+    guestToken?: string
+  ) {
     const reservation = await this.prisma.reservation.findUnique({
       where: { id: reservationId },
     });
@@ -323,12 +340,42 @@ export class ReservationsService {
       throw err;
     }
 
-    // Access control: Customers can only cancel their own booking
-    if (actor.role === Role.CUSTOMER && reservation.userId && reservation.userId !== actor.id) {
-      const err: any = new Error('Cannot cancel another guest reservation');
-      err.statusCode = 403;
-      err.code = 'FORBIDDEN_RESERVATION_ACCESS';
-      throw err;
+    // Access control:
+    if (actor.role === Role.CUSTOMER) {
+      if (reservation.userId) {
+        if (reservation.userId !== actor.id) {
+          const err: any = new Error('Cannot cancel another customer reservation');
+          err.statusCode = 403;
+          err.code = 'FORBIDDEN_RESERVATION_ACCESS';
+          throw err;
+        }
+      } else {
+        // Guest reservation: MUST supply matching guest access token
+        if (reservation.guestAccessTokenHash) {
+          if (!guestToken) {
+            const err: any = new Error(
+              'Guest reservations require a valid guest access token to cancel'
+            );
+            err.statusCode = 403;
+            err.code = 'FORBIDDEN_RESERVATION_ACCESS';
+            throw err;
+          }
+
+          const computedHash = crypto.createHash('sha256').update(guestToken).digest('hex');
+          const expectedBuffer = Buffer.from(reservation.guestAccessTokenHash, 'utf8');
+          const actualBuffer = Buffer.from(computedHash, 'utf8');
+
+          if (
+            expectedBuffer.length !== actualBuffer.length ||
+            !crypto.timingSafeEqual(expectedBuffer, actualBuffer)
+          ) {
+            const err: any = new Error('Invalid guest access token');
+            err.statusCode = 403;
+            err.code = 'FORBIDDEN_RESERVATION_ACCESS';
+            throw err;
+          }
+        }
+      }
     }
 
     if (reservation.status === ReservationStatus.CANCELLED) {

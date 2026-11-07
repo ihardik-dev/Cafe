@@ -22,9 +22,11 @@ export class PaymentsController {
 
     try {
       const userId = request.user?.id;
+      const guestToken = request.headers['x-guest-access-token'] as string | undefined;
       const intent = await this.paymentsService.createPaymentIntent(
         parseResult.data.orderId,
-        userId
+        userId,
+        guestToken
       );
       return reply.status(200).send({ paymentIntent: intent });
     } catch (err: any) {

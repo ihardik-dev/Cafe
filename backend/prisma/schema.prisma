@@ -131,8 +131,10 @@ model Order {
   subtotalInPaise  Int                  // Base items sum in paise
   taxInPaise       Int                  // Standard GST calculated server-side in paise
   totalInPaise     Int                  // Final bill in paise
-  idempotencyKey   String?              @unique // Prevents double checkout submissions
-  paymentIntentId  String?              @unique
+  idempotencyKey           String?              @unique // Prevents double checkout submissions
+  idempotencyPayloadHash   String?              // SHA-256 fingerprint of cart items & amount
+  guestAccessTokenHash     String?              // SHA-256 hash of secret guest token (prevents IDOR access)
+  paymentIntentId          String?              @unique
   paymentMethod    String?              // e.g. "UPI", "CARD", "NETBANKING", "CASH"
   customerNote     String?
   customerEmail    String?
@@ -231,8 +233,9 @@ model Reservation {
   user          User?             @relation(fields: [userId], references: [id], onDelete: SetNull)
   customerName  String
   customerEmail String
-  customerPhone String
-  guestCount    Int
+  customerPhone        String
+  guestAccessTokenHash String?           // SHA-256 hash of secret guest token (prevents unauthorized cancellation)
+  guestCount           Int
   startTime     DateTime
   endTime       DateTime
   status        ReservationStatus @default(CONFIRMED)

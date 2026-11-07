@@ -34,7 +34,8 @@ export class OrdersController {
   async getOrderById(request: FastifyRequest<{ Params: { orderId: string } }>, reply: FastifyReply) {
     try {
       const actor = request.user ? { id: request.user.id, role: request.user.role } : { role: Role.CUSTOMER };
-      const order = await this.ordersService.getOrderById(request.params.orderId, actor);
+      const guestToken = request.headers['x-guest-access-token'] as string | undefined;
+      const order = await this.ordersService.getOrderById(request.params.orderId, actor, guestToken);
       return reply.status(200).send({ order });
     } catch (err: any) {
       return reply.status(err.statusCode || 500).send({
@@ -64,11 +65,13 @@ export class OrdersController {
       const actor = request.user
         ? { id: request.user.id, role: request.user.role }
         : { role: Role.CUSTOMER };
+      const guestToken = request.headers['x-guest-access-token'] as string | undefined;
 
       const order = await this.ordersService.updateOrderStatus(
         request.params.orderId,
         parseResult.data,
-        actor
+        actor,
+        guestToken
       );
       return reply.status(200).send({ order });
     } catch (err: any) {
@@ -87,7 +90,7 @@ export class OrdersController {
         return reply.status(401).send({
           statusCode: 401,
           error: 'Unauthorized',
-          message: 'Authentication required to view order history',
+          message: 'Must be logged in to view my orders',
         });
       }
 

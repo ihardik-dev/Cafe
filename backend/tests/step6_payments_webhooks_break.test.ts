@@ -113,6 +113,25 @@ function createInMemoryPrisma() {
         inventoryItems.set(targetId, updated);
         return { ...updated };
       },
+      async updateMany({ where, data }: any) {
+        let count = 0;
+        for (const [id, inv] of inventoryItems.entries()) {
+          if (where.id && id !== where.id) continue;
+          if (where.menuItemId && inv.menuItemId !== where.menuItemId) continue;
+          if (where.stockQuantity?.gte !== undefined && inv.stockQuantity < where.stockQuantity.gte) {
+            continue;
+          }
+          let newStock = inv.stockQuantity;
+          if (data.stockQuantity?.decrement !== undefined) {
+            newStock -= data.stockQuantity.decrement;
+          } else if (data.stockQuantity?.increment !== undefined) {
+            newStock += data.stockQuantity.increment;
+          }
+          inventoryItems.set(id, { ...inv, stockQuantity: newStock });
+          count++;
+        }
+        return { count };
+      },
     },
     order: {
       async findUnique({ where, include }: any) {

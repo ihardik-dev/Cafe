@@ -341,25 +341,30 @@ export class MenuService {
           continue;
         }
 
-        const currentStock = menuItem.inventory.stockQuantity;
-        if (currentStock < item.quantity) {
-          const err: any = new Error(
-            `Insufficient stock for "${menuItem.name}". Requested: ${item.quantity}, Available: ${currentStock}`
-          );
-          err.statusCode = 409;
-          err.code = 'INSUFFICIENT_STOCK';
-          throw err;
-        }
-
-        // Atomic decrement
-        await client.inventoryItem.update({
-          where: { id: menuItem.inventory.id },
+        // Database-level conditional atomic decrement:
+        // Guarantees zero negative stock even under extreme concurrency!
+        const updateResult = await client.inventoryItem.updateMany({
+          where: {
+            id: menuItem.inventory.id,
+            stockQuantity: {
+              gte: item.quantity,
+            },
+          },
           data: {
             stockQuantity: {
               decrement: item.quantity,
             },
           },
         });
+
+        if (updateResult.count === 0) {
+          const err: any = new Error(
+            `Insufficient stock for "${menuItem.name}". Available stock is less than requested quantity (${item.quantity}).`
+          );
+          err.statusCode = 409;
+          err.code = 'INSUFFICIENT_STOCK';
+          throw err;
+        }
       }
     };
 

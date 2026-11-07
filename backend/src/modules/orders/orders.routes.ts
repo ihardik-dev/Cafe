@@ -83,7 +83,7 @@ export const ordersRoutes: FastifyPluginAsync = async (fastify) => {
   fastify.patch(
     '/:orderId/status',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.optionalAuthenticate],
       schema: {
         tags: ['Orders'],
         summary: 'Transition order state (guarded by state machine & RBAC)',

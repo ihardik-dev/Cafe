@@ -137,6 +137,25 @@ function createInMemoryPrisma() {
         inventoryItems.set(targetId, updated);
         return { ...updated };
       },
+      async updateMany({ where, data }: any) {
+        let count = 0;
+        for (const [id, inv] of inventoryItems.entries()) {
+          if (where.id && id !== where.id) continue;
+          if (where.menuItemId && inv.menuItemId !== where.menuItemId) continue;
+          if (where.stockQuantity?.gte !== undefined && inv.stockQuantity < where.stockQuantity.gte) {
+            continue;
+          }
+          let newStock = inv.stockQuantity;
+          if (data.stockQuantity?.decrement !== undefined) {
+            newStock -= data.stockQuantity.decrement;
+          } else if (data.stockQuantity?.increment !== undefined) {
+            newStock += data.stockQuantity.increment;
+          }
+          inventoryItems.set(id, { ...inv, stockQuantity: newStock });
+          count++;
+        }
+        return { count };
+      },
     },
     order: {
       async findUnique({ where, include }: any) {
@@ -171,17 +190,7 @@ function createInMemoryPrisma() {
         const id = data.id || `order-${Date.now()}-${Math.random()}`;
         const order = {
           id,
-          orderNumber: data.orderNumber,
-          userId: data.userId || null,
-          status: data.status || OrderStatus.PENDING_PAYMENT,
-          subtotalInPaise: data.subtotalInPaise,
-          taxInPaise: data.taxInPaise,
-          totalInPaise: data.totalInPaise,
-          idempotencyKey: data.idempotencyKey || null,
-          customerEmail: data.customerEmail || null,
-          customerPhone: data.customerPhone || null,
-          customerNote: data.customerNote || null,
-          expiresAt: data.expiresAt,
+          ...data,
           createdAt: new Date(),
           updatedAt: new Date(),
         };
@@ -492,7 +501,7 @@ describe('STEP 4 ADVERSARIAL BREAK TESTS: Order State Machine & Server-Side Pric
   describe('Adversarial Stock Restoration on Order Cancellation', () => {
     it('MUST automatically restore reserved stock when order is cancelled from PENDING_PAYMENT', async () => {
       // 1. Order 3 Croissants (stock drops from 5 to 2)
-      const { order } = await ordersService.checkout({
+      const { order, guestAccessToken } = await ordersService.checkout({
         idempotencyKey: 'cancel-restore-key-1',
         items: [{ menuItemId: croissantId, quantity: 3 }],
       });
@@ -500,11 +509,12 @@ describe('STEP 4 ADVERSARIAL BREAK TESTS: Order State Machine & Server-Side Pric
       let inv = await mockPrisma.inventoryItem.findUnique({ where: { menuItemId: croissantId } });
       expect(inv.stockQuantity).toBe(2);
 
-      // 2. Customer cancels order
+      // 2. Customer cancels order with guest access token
       await ordersService.updateOrderStatus(
         order.id,
         { status: OrderStatus.CANCELLED, reason: 'Changed mind' },
-        { role: Role.CUSTOMER }
+        { role: Role.CUSTOMER },
+        guestAccessToken
       );
 
       // 3. Stock MUST be restored back to 5
