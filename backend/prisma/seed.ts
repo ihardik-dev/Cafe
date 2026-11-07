@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log('🌱 Starting Cafe Database Seeding...');
+  console.log('🌱 Starting Cafe Database Seeding (Indian Rupee / Paise Pricing)...');
 
   // 1. Clean existing records (in reverse dependency order)
   await prisma.refundAudit.deleteMany();
@@ -28,7 +28,7 @@ async function main() {
 
   const admin = await prisma.user.create({
     data: {
-      email: 'admin@artisanroasters.com',
+      email: 'admin@artisanroasters.in',
       passwordHash: defaultPasswordHash,
       name: 'Owner Admin',
       role: Role.ADMIN,
@@ -37,7 +37,7 @@ async function main() {
 
   const staff = await prisma.user.create({
     data: {
-      email: 'barista@artisanroasters.com',
+      email: 'barista@artisanroasters.in',
       passwordHash: defaultPasswordHash,
       name: 'Head Barista Jack',
       role: Role.STAFF,
@@ -46,9 +46,9 @@ async function main() {
 
   const customer = await prisma.user.create({
     data: {
-      email: 'customer@example.com',
+      email: 'customer@example.in',
       passwordHash: defaultPasswordHash,
-      name: 'Alice Coffee Lover',
+      name: 'Aarav Sharma',
       role: Role.CUSTOMER,
     },
   });
@@ -59,7 +59,7 @@ async function main() {
   const catCoffee = await prisma.category.create({
     data: {
       name: 'Specialty Coffee',
-      description: 'Single-origin beans roasted in-house with precision extraction',
+      description: 'Chikmagalur & Coorg single-origin beans roasted with precision',
       displayOrder: 1,
     },
   });
@@ -74,31 +74,31 @@ async function main() {
 
   const catSandwiches = await prisma.category.create({
     data: {
-      name: 'Gourmet Sandwiches',
-      description: 'Toasted organic sourdough paninis and brunch plates',
+      name: 'Gourmet Sandwiches & Brunch',
+      description: 'Toasted organic sourdough paninis, sourdough toasts, and cafe specials',
       displayOrder: 3,
     },
   });
 
   const catCold = await prisma.category.create({
     data: {
-      name: 'Cold Beverages',
-      description: '18-hour cold brew and sparkling tonics',
+      name: 'Cold Brews & Tonics',
+      description: '18-hour cold brew and sparkling citrus tonics',
       displayOrder: 4,
     },
   });
 
   console.log('✅ Categories seeded');
 
-  // 4. Seed Menu Items & Modifiers
+  // 4. Seed Menu Items & Modifiers (Prices in Paise: ₹1 = 100 paise)
 
-  // Item 1: Flat White
+  // Item 1: Signature Flat White (₹240 = 24,000 paise)
   const flatWhite = await prisma.menuItem.create({
     data: {
       categoryId: catCoffee.id,
       name: 'Signature Flat White',
       description: 'Double ristretto shot with velvety microfoam steamed milk',
-      priceInCents: 475, // $4.75
+      priceInPaise: 24000, // ₹240.00
       imageUrl: 'https://images.unsplash.com/photo-1577968897966-3d4325b36b61?auto=format&fit=crop&w=600&q=80',
       isAvailable: true,
       isPerishable: false,
@@ -106,7 +106,7 @@ async function main() {
   });
 
   // Flat White Modifier Groups
-  const milkGroup = await prisma.modifierGroup.create({
+  await prisma.modifierGroup.create({
     data: {
       menuItemId: flatWhite.id,
       name: 'Milk Choice',
@@ -114,16 +114,16 @@ async function main() {
       maxSelection: 1,
       options: {
         create: [
-          { name: 'Whole Milk (Standard)', extraPriceInCents: 0, isAvailable: true },
-          { name: 'Oat Milk (Minor Figures)', extraPriceInCents: 75, isAvailable: true },
-          { name: 'Almond Milk (Unsweetened)', extraPriceInCents: 60, isAvailable: true },
-          { name: 'Skim Milk', extraPriceInCents: 0, isAvailable: true },
+          { name: 'Whole Dairy Milk', extraPriceInPaise: 0, isAvailable: true },
+          { name: 'Oat Milk (Barista Edition)', extraPriceInPaise: 6000, isAvailable: true }, // +₹60
+          { name: 'Almond Milk (Unsweetened)', extraPriceInPaise: 5000, isAvailable: true },  // +₹50
+          { name: 'Skim Milk', extraPriceInPaise: 0, isAvailable: true },
         ],
       },
     },
   });
 
-  const shotGroup = await prisma.modifierGroup.create({
+  await prisma.modifierGroup.create({
     data: {
       menuItemId: flatWhite.id,
       name: 'Espresso Shots',
@@ -131,40 +131,52 @@ async function main() {
       maxSelection: 3,
       options: {
         create: [
-          { name: 'Extra Espresso Shot', extraPriceInCents: 100, isAvailable: true },
-          { name: 'Decaf Blend', extraPriceInCents: 50, isAvailable: true },
+          { name: 'Extra Single Origin Shot', extraPriceInPaise: 7000, isAvailable: true }, // +₹70
+          { name: 'Decaf Roast', extraPriceInPaise: 4000, isAvailable: true },              // +₹40
         ],
       },
     },
   });
 
-  // Item 2: 18-Hour Kyoto Cold Brew
+  // Item 2: South Indian Artisanal Filter Coffee (₹160 = 16,000 paise)
+  await prisma.menuItem.create({
+    data: {
+      categoryId: catCoffee.id,
+      name: 'Artisanal South Indian Filter Coffee',
+      description: 'Slow-drip 80/20 plantation blend with chicory and frothy dairy milk',
+      priceInPaise: 16000, // ₹160.00
+      imageUrl: 'https://images.unsplash.com/photo-1514432324607-a09d9b4aefdd?auto=format&fit=crop&w=600&q=80',
+      isAvailable: true,
+      isPerishable: false,
+    },
+  });
+
+  // Item 3: 18-Hour Single Origin Cold Brew (₹260 = 26,000 paise)
   await prisma.menuItem.create({
     data: {
       categoryId: catCold.id,
-      name: 'Kyoto-Style Cold Brew',
-      description: 'Slow-drip single origin Ethiopian Guji with floral and berry notes',
-      priceInCents: 525, // $5.25
+      name: '18-Hour Single Origin Cold Brew',
+      description: 'Slow steeped Ethiopian & Chikmagalur beans with deep chocolate notes',
+      priceInPaise: 26000, // ₹260.00
       imageUrl: 'https://images.unsplash.com/photo-1517701550927-30cf4ba1dba5?auto=format&fit=crop&w=600&q=80',
       isAvailable: true,
       isPerishable: false,
     },
   });
 
-  // Item 3: Almond Croissant (Perishable with finite stock)
+  // Item 4: Double-Baked Almond Croissant (₹220 = 22,000 paise, Perishable)
   const almondCroissant = await prisma.menuItem.create({
     data: {
       categoryId: catBakery.id,
       name: 'Double-Baked Almond Croissant',
-      description: 'Twice-baked butter croissant filled with frangipane and topped with sliced almonds',
-      priceInCents: 450, // $4.50
+      description: 'Twice-baked French butter croissant filled with nutty frangipane cream',
+      priceInPaise: 22000, // ₹220.00
       imageUrl: 'https://images.unsplash.com/photo-1555507036-ab1f4038808a?auto=format&fit=crop&w=600&q=80',
       isAvailable: true,
       isPerishable: true,
     },
   });
 
-  // Add finite inventory for Almond Croissant (e.g. 10 baked daily)
   await prisma.inventoryItem.create({
     data: {
       menuItemId: almondCroissant.id,
@@ -173,13 +185,13 @@ async function main() {
     },
   });
 
-  // Item 4: Pain au Chocolat (Perishable with finite stock)
+  // Item 5: French Pain au Chocolat (₹210 = 21,000 paise, Perishable)
   const painAuChocolat = await prisma.menuItem.create({
     data: {
       categoryId: catBakery.id,
-      name: 'French Butter Pain au Chocolat',
-      description: 'Flaky viennoiserie pastry enclosing two batons of Valrhona dark chocolate',
-      priceInCents: 425, // $4.25
+      name: 'Belgian Dark Pain au Chocolat',
+      description: 'Flaky viennoiserie pastry enclosing two batons of Belgian dark chocolate',
+      priceInPaise: 21000, // ₹210.00
       imageUrl: 'https://images.unsplash.com/photo-1530610476181-d83430b64dcd?auto=format&fit=crop&w=600&q=80',
       isAvailable: true,
       isPerishable: true,
@@ -194,20 +206,33 @@ async function main() {
     },
   });
 
-  // Item 5: Truffle Mushroom & Gruyere Sourdough Panini
+  // Item 6: Bombay Masala Grilled Panini (₹260 = 26,000 paise)
   await prisma.menuItem.create({
     data: {
       categoryId: catSandwiches.id,
-      name: 'Truffle Mushroom Sourdough Melt',
-      description: 'Roasted cremini mushrooms, aged Gruyere cheese, caramelized onions, and white truffle oil',
-      priceInCents: 1150, // $11.50
+      name: 'Bombay Masala Sourdough Panini',
+      description: 'Spiced potato filling, mint chutney, bell peppers, and melted Amul cheese on sourdough',
+      priceInPaise: 26000, // ₹260.00
       imageUrl: 'https://images.unsplash.com/photo-1528735602780-2552fd46c7af?auto=format&fit=crop&w=600&q=80',
       isAvailable: true,
       isPerishable: false,
     },
   });
 
-  console.log('✅ Menu items, modifiers, and inventory items seeded');
+  // Item 7: Truffle Mushroom & Gruyere Melt (₹380 = 38,000 paise)
+  await prisma.menuItem.create({
+    data: {
+      categoryId: catSandwiches.id,
+      name: 'Truffle Mushroom Sourdough Melt',
+      description: 'Roasted cremini mushrooms, aged Gruyere cheese, caramelized onions, and white truffle glaze',
+      priceInPaise: 38000, // ₹380.00
+      imageUrl: 'https://images.unsplash.com/photo-1509722747041-616f39b57569?auto=format&fit=crop&w=600&q=80',
+      isAvailable: true,
+      isPerishable: false,
+    },
+  });
+
+  console.log('✅ Menu items, modifiers, and inventory items seeded in INR / Paise');
 
   // 5. Seed Tables for Reservations
   const tables = [
@@ -224,7 +249,7 @@ async function main() {
   }
 
   console.log(`✅ ${tables.length} Cafe tables seeded`);
-  console.log('🎉 Database seeding complete!');
+  console.log('🎉 Database seeding complete (All prices in INR / Paise)!');
 }
 
 main()

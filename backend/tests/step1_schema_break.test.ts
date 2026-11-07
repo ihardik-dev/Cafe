@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  priceInCentsSchema,
+  priceInPaiseSchema,
   positiveQuantitySchema,
   createMenuItemSchema,
   createModifierGroupSchema,
@@ -8,13 +8,13 @@ import {
 } from '../src/modules/menu/menu.schema.js';
 import { Prisma } from '@prisma/client';
 
-describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', () => {
-  describe('Adversarial Financial Integrity: priceInCentsSchema', () => {
-    it('MUST REJECT negative prices (attacker attempting to get paid by the cafe)', () => {
-      const negativePrices = [-1, -500, -9999999];
+describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity (INR / Paise)', () => {
+  describe('Adversarial Financial Integrity: priceInPaiseSchema', () => {
+    it('MUST REJECT negative prices in paise (attacker attempting to get paid by the cafe)', () => {
+      const negativePrices = [-1, -5000, -9999999];
       for (const price of negativePrices) {
-        const result = priceInCentsSchema.safeParse(price);
-        expect(result.success, `Expected price ${price} to fail`).toBe(false);
+        const result = priceInPaiseSchema.safeParse(price);
+        expect(result.success, `Expected price ${price} paise to fail`).toBe(false);
         if (!result.success) {
           expect(result.error.issues[0]?.message).toMatch(/cannot be negative/i);
         }
@@ -22,9 +22,9 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
     });
 
     it('MUST REJECT floating-point prices (preventing IEEE 754 decimal rounding bugs)', () => {
-      const floatPrices = [4.99, 0.01, 12.3456, 9.999999];
+      const floatPrices = [240.50, 0.01, 160.75, 99.999];
       for (const price of floatPrices) {
-        const result = priceInCentsSchema.safeParse(price);
+        const result = priceInPaiseSchema.safeParse(price);
         expect(result.success, `Expected float ${price} to fail`).toBe(false);
         if (!result.success) {
           expect(result.error.issues[0]?.message).toMatch(/integer/i);
@@ -33,17 +33,20 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
     });
 
     it('MUST REJECT non-number poisonous values: NaN, Infinity, -Infinity, strings, null', () => {
-      const toxicValues = [NaN, Infinity, -Infinity, '450', null, undefined, {}, []];
+      const toxicValues = [NaN, Infinity, -Infinity, '24000', null, undefined, {}, []];
       for (const val of toxicValues) {
-        const result = priceInCentsSchema.safeParse(val);
+        const result = priceInPaiseSchema.safeParse(val);
         expect(result.success, `Expected toxic value ${val} to fail`).toBe(false);
       }
     });
 
-    it('MUST ACCEPT valid integer cents (0 for free items, positive ints for paid)', () => {
-      expect(priceInCentsSchema.safeParse(0).success).toBe(true);
-      expect(priceInCentsSchema.safeParse(450).success).toBe(true);
-      expect(priceInCentsSchema.safeParse(1250).success).toBe(true);
+    it('MUST ACCEPT valid integer paise (0 for free items, positive ints for paid in INR)', () => {
+      // Free item (₹0 = 0 paise)
+      expect(priceInPaiseSchema.safeParse(0).success).toBe(true);
+      // Flat White ₹240 = 24,000 paise
+      expect(priceInPaiseSchema.safeParse(24000).success).toBe(true);
+      // Truffle Melt ₹380 = 38,000 paise
+      expect(priceInPaiseSchema.safeParse(38000).success).toBe(true);
     });
   });
 
@@ -103,18 +106,18 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
       expect(createModifierGroupSchema.safeParse(negativeMin).success).toBe(false);
     });
 
-    it('MUST REJECT modifier option with negative extra price (discount hijacking)', () => {
+    it('MUST REJECT modifier option with negative extra price in paise (discount hijacking)', () => {
       const negativeModifier = {
         groupId: '123e4567-e89b-12d3-a456-426614174000',
         name: 'Malicious Discount Surcharge',
-        extraPriceInCents: -200, // Attacker trying to knock $2 off the total bill
+        extraPriceInPaise: -5000, // Attacker trying to knock ₹50 off the total bill
       };
       const result = createModifierOptionSchema.safeParse(negativeModifier);
       expect(result.success).toBe(false);
     });
   });
 
-  describe('Prisma Client Model & Type Metadata Verification', () => {
+  describe('Prisma Client Model & Type Metadata Verification (INR Fields)', () => {
     it('MUST have all required models exposed in Prisma DMMF', () => {
       const dmmf = Prisma.dmmf;
       const modelNames = dmmf.datamodel.models.map((m) => m.name);
@@ -140,6 +143,21 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
       for (const model of requiredModels) {
         expect(modelNames, `Missing model ${model} in Prisma schema`).toContain(model);
       }
+    });
+
+    it('MUST verify financial fields in Prisma use priceInPaise', () => {
+      const dmmf = Prisma.dmmf;
+      const menuItem = dmmf.datamodel.models.find((m) => m.name === 'MenuItem');
+      expect(menuItem).toBeDefined();
+
+      const priceField = menuItem?.fields.find((f) => f.name === 'priceInPaise');
+      expect(priceField, 'MenuItem MUST have priceInPaise field for INR currency integrity').toBeDefined();
+      expect(priceField?.type).toBe('Int');
+
+      const orderItem = dmmf.datamodel.models.find((m) => m.name === 'OrderItem');
+      const unitPriceField = orderItem?.fields.find((f) => f.name === 'unitPriceInPaise');
+      expect(unitPriceField, 'OrderItem MUST have unitPriceInPaise field').toBeDefined();
+      expect(unitPriceField?.type).toBe('Int');
     });
 
     it('MUST have compound unique constraint on ReservationHold [tableId, slotStartTime]', () => {
@@ -178,7 +196,7 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
       }
     });
 
-    it('MUST IGNORE client-injected pricing fields (prevents price spoofing)', async () => {
+    it('MUST IGNORE client-injected pricing fields (prevents price spoofing in INR)', async () => {
       const { checkoutRequestSchema } = await import('../src/modules/orders/orders.schema.js');
       const spoofedOrder = {
         idempotencyKey: 'test-idemp-key-12345',
@@ -187,16 +205,16 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
             menuItemId: '123e4567-e89b-12d3-a456-426614174000',
             quantity: 2,
             selectedModifierOptionIds: [],
-            priceInCents: 0, // Attacker trying to say price is $0.00!
-            totalInCents: 0,
+            priceInPaise: 0, // Attacker trying to say price is ₹0.00!
+            totalInPaise: 0,
           },
         ],
-        totalInCents: 0, // Attacker spoofing bill total!
+        totalInPaise: 0, // Attacker spoofing bill total!
       };
       const parsed = checkoutRequestSchema.parse(spoofedOrder);
-      // Ensure the spoofed totalInCents is NOT part of the validated object
-      expect((parsed as any).totalInCents).toBeUndefined();
-      expect((parsed.items[0] as any).priceInCents).toBeUndefined();
+      // Ensure the spoofed totalInPaise is NOT part of the validated object
+      expect((parsed as any).totalInPaise).toBeUndefined();
+      expect((parsed.items[0] as any).priceInPaise).toBeUndefined();
     });
 
     it('MUST REJECT cart with more than 30 unique items (denial-of-service prevention)', async () => {
@@ -227,8 +245,8 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
         startTime: pastTime,
         durationMinutes: 60,
         customerName: 'Past Booker',
-        customerEmail: 'past@example.com',
-        customerPhone: '+1234567890',
+        customerEmail: 'past@example.in',
+        customerPhone: '+919876543210',
       };
       const result = holdReservationSchema.safeParse(attackBooking);
       expect(result.success).toBe(false);
@@ -248,15 +266,15 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
           startTime: futureTime,
           durationMinutes: 60,
           customerName: 'Guest Count Attacker',
-          customerEmail: 'attacker@example.com',
-          customerPhone: '+1234567890',
+          customerEmail: 'attacker@example.in',
+          customerPhone: '+919876543210',
         };
         const result = holdReservationSchema.safeParse(payload);
         expect(result.success, `Expected guestCount ${guests} to fail`).toBe(false);
       }
     });
 
-    it('MUST REJECT non-standard slot durations (e.g. 17 minutes or 75 minutes)', async () => {
+    it('MUST REJECT non-standard slot durations (e.g. 45 minutes)', async () => {
       const { holdReservationSchema } = await import('../src/modules/reservations/reservations.schema.js');
       const futureTime = new Date(Date.now() + 86400000).toISOString();
       const payload = {
@@ -265,8 +283,8 @@ describe('STEP 1 ADVERSARIAL BREAK TESTS: Schema, Types & Financial Integrity', 
         startTime: futureTime,
         durationMinutes: 45, // Not 60, 90, or 120
         customerName: 'Duration Attacker',
-        customerEmail: 'attacker@example.com',
-        customerPhone: '+1234567890',
+        customerEmail: 'attacker@example.in',
+        customerPhone: '+919876543210',
       };
       const result = holdReservationSchema.safeParse(payload);
       expect(result.success).toBe(false);

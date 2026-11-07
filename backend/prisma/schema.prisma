@@ -53,7 +53,7 @@ model MenuItem {
   category       Category        @relation(fields: [categoryId], references: [id], onDelete: Cascade)
   name           String
   description    String?
-  priceInCents   Int             // Stored as integer cents (e.g. $4.50 = 450)
+  priceInPaise   Int             // Stored as integer paise (e.g. ₹240.00 = 24000 paise)
   imageUrl       String?
   isAvailable    Boolean         @default(true)
   isPerishable   Boolean         @default(false)
@@ -71,7 +71,7 @@ model ModifierGroup {
   id           String           @id @default(uuid())
   menuItemId   String
   menuItem     MenuItem         @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
-  name         String           // e.g. "Milk Choice", "Extra Shots", "Size"
+  name         String           // e.g. "Milk Choice", "Extra Shots", "Syrups"
   minSelection Int              @default(0)
   maxSelection Int              @default(1)
   options      ModifierOption[]
@@ -82,15 +82,15 @@ model ModifierGroup {
 }
 
 model ModifierOption {
-  id                String              @id @default(uuid())
-  groupId           String
-  group             ModifierGroup       @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  name              String              // e.g. "Oat Milk", "Almond Milk", "Extra Shot"
-  extraPriceInCents Int                 @default(0) // Integer cents (e.g. $0.75 = 75)
-  isAvailable       Boolean             @default(true)
+  id                 String              @id @default(uuid())
+  groupId            String
+  group              ModifierGroup       @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  name               String              // e.g. "Oat Milk", "Extra Espresso Shot", "Hazelnut Syrup"
+  extraPriceInPaise  Int                 @default(0) // Integer paise (e.g. ₹60.00 = 6000 paise)
+  isAvailable        Boolean             @default(true)
   orderItemModifiers OrderItemModifier[]
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
 
   @@index([groupId])
 }
@@ -107,7 +107,7 @@ model InventoryItem {
 }
 
 // ----------------------------------------------------
-// ORDERS & FINANCIAL AUDIT
+// ORDERS & FINANCIAL AUDIT (INDIAN RUPEES / PAISE)
 // ----------------------------------------------------
 
 enum OrderStatus {
@@ -128,12 +128,12 @@ model Order {
   userId           String?
   user             User?                @relation(fields: [userId], references: [id], onDelete: SetNull)
   status           OrderStatus          @default(PENDING_PAYMENT)
-  subtotalInCents  Int                  // Base items sum
-  taxInCents       Int                  // Tax calculated server-side
-  totalInCents     Int                  // Final bill
+  subtotalInPaise  Int                  // Base items sum in paise
+  taxInPaise       Int                  // Standard GST calculated server-side in paise
+  totalInPaise     Int                  // Final bill in paise
   idempotencyKey   String?              @unique // Prevents double checkout submissions
   paymentIntentId  String?              @unique
-  paymentMethod    String?              // e.g. "CARD", "CASH", "UPI"
+  paymentMethod    String?              // e.g. "UPI", "CARD", "NETBANKING", "CASH"
   customerNote     String?
   customerEmail    String?
   customerPhone    String?
@@ -156,8 +156,8 @@ model OrderItem {
   menuItemId        String
   menuItem          MenuItem            @relation(fields: [menuItemId], references: [id])
   quantity          Int
-  unitPriceInCents  Int                 // Snapshot of base price at checkout
-  totalPriceInCents Int                 // (unitPrice + modifiers) * quantity
+  unitPriceInPaise  Int                 // Snapshot of base price at checkout in paise
+  totalPriceInPaise Int                 // (unitPrice + modifiers) * quantity in paise
   modifiers         OrderItemModifier[]
   createdAt         DateTime            @default(now())
 
@@ -165,14 +165,14 @@ model OrderItem {
 }
 
 model OrderItemModifier {
-  id                String         @id @default(uuid())
-  orderItemId       String
-  orderItem         OrderItem      @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
-  modifierOptionId  String
-  modifierOption    ModifierOption @relation(fields: [modifierOptionId], references: [id])
-  name              String         // Snapshot name
-  extraPriceInCents Int            // Snapshot extra price
-  createdAt         DateTime       @default(now())
+  id                 String         @id @default(uuid())
+  orderItemId        String
+  orderItem          OrderItem      @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  modifierOptionId   String
+  modifierOption     ModifierOption @relation(fields: [modifierOptionId], references: [id])
+  name               String         // Snapshot name
+  extraPriceInPaise  Int            // Snapshot extra price in paise
+  createdAt          DateTime       @default(now())
 
   @@index([orderItemId])
 }
@@ -260,13 +260,13 @@ model ReservationHold {
 }
 
 // ----------------------------------------------------
-// PAYMENT WEBHOOK IDEMPOTENCY & REFUND AUDIT
+// PAYMENT WEBHOOK IDEMPOTENCY & REFUND AUDIT (INR)
 // ----------------------------------------------------
 
 model InboundWebhookEvent {
   id          String   @id @default(uuid())
-  eventId     String   @unique // Gateway event ID (e.g. evt_123456789)
-  eventType   String   // e.g. "payment_intent.succeeded"
+  eventId     String   @unique // Gateway event ID (e.g. evt_123456789 or pay_123456789)
+  eventType   String   // e.g. "payment.captured", "payment_intent.succeeded"
   payloadJson String   // Raw JSON string
   processedAt DateTime @default(now())
 
@@ -278,7 +278,7 @@ model RefundAudit {
   orderId         String
   order           Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
   paymentIntentId String
-  amountInCents   Int
+  amountInPaise   Int      // Amount in paise
   reason          String   // e.g. "LATE_WEBHOOK_RECEIVED_AFTER_EXPIRATION"
   gatewayRefundId String?
   status          String   @default("SUCCEEDED")

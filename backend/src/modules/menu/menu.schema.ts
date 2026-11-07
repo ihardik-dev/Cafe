@@ -1,17 +1,17 @@
 import { z } from 'zod';
 
 /**
- * Currency values must ALWAYS be:
- * 1. Integers (never floats like 4.99)
+ * Currency values (INR) must ALWAYS be:
+ * 1. Integers (never floats like 240.50)
  * 2. Non-negative (>= 0)
- * 3. In cents/paise (e.g. $4.50 -> 450)
+ * 3. In Indian paise (e.g. ₹240.00 -> 24000 paise; ₹1 = 100 paise)
  */
-export const priceInCentsSchema = z
+export const priceInPaiseSchema = z
   .number({
-    error: 'Price in cents is required and must be a number',
+    error: 'Price in paise is required and must be an integer number',
   })
-  .int('Price must be an integer, never a decimal/float')
-  .min(0, 'Price in cents cannot be negative');
+  .int('Price must be an integer (in paise), never a decimal/float')
+  .min(0, 'Price in paise cannot be negative');
 
 export const positiveQuantitySchema = z
   .number({
@@ -26,7 +26,7 @@ export const createMenuItemSchema = z.object({
   categoryId: z.string().uuid('Invalid category ID'),
   name: z.string().min(2, 'Name must be at least 2 characters').max(100),
   description: z.string().max(500).optional(),
-  priceInCents: priceInCentsSchema,
+  priceInPaise: priceInPaiseSchema,
   imageUrl: z.string().url().optional(),
   isAvailable: z.boolean().default(true),
   isPerishable: z.boolean().default(false),
@@ -47,7 +47,7 @@ export const createModifierGroupSchema = z.object({
 export const createModifierOptionSchema = z.object({
   groupId: z.string().uuid('Invalid modifier group ID'),
   name: z.string().min(1).max(100),
-  extraPriceInCents: priceInCentsSchema,
+  extraPriceInPaise: priceInPaiseSchema,
   isAvailable: z.boolean().default(true),
 });
 
